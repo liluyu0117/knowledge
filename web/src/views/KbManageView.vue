@@ -4,7 +4,7 @@ import { api } from '../api'
 import { preview } from '../store/preview'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, Document, Loading, Delete, Upload } from '@element-plus/icons-vue'
+import { Folder, Document, Loading, Delete, Upload, PriceTag } from '@element-plus/icons-vue'
 
 const kbs = ref([])
 const currentId = ref('')
@@ -193,6 +193,49 @@ async function loadTree(kbId, silent = false) {
   } finally {
     treeLoading.value = false
   }
+  loadDocMeta(kbId)
+}
+
+// ── 文档标签（元数据过滤）──
+const metaDocs = ref({})        // path -> { tags, source, updatedAt }
+const tagFilter = ref([])       // 文件树按标签筛选（空 = 不过滤）
+const tagEdit = ref({ show: false, path: '', tags: [] })
+
+async function loadDocMeta(kbId) {
+  if (!kbId) return
+  try {
+    const r = await api.get(`/api/kb/${kbId}/docmeta`)
+    if (r.ok && currentId.value === kbId) metaDocs.value = r.docs || {}
+  } catch { /* 无标签数据不阻塞 */ }
+}
+
+const knownTags = computed(() => {
+  const s = new Set()
+  for (const d of Object.values(metaDocs.value)) (d.tags || []).forEach((t) => s.add(t))
+  return [...s].sort()
+})
+
+function tagsOf(path) { return (metaDocs.value[path] || {}).tags || [] }
+
+function hasTag(path) {
+  const t = tagsOf(path)
+  return tagFilter.value.some((x) => t.includes(x))
+}
+
+function openTagEdit(n) {
+  tagEdit.value = { show: true, path: n.path, tags: [...tagsOf(n.path)] }
+}
+
+async function saveTags() {
+  const { path, tags } = tagEdit.value
+  try {
+    await api.post(`/api/kb/${currentId.value}/docmeta`, { path, tags })
+    metaDocs.value = { ...metaDocs.value, [path]: { ...(metaDocs.value[path] || {}), tags: [...tags] } }
+    ElMessage.success('标签已保存')
+    tagEdit.value.show = false
+  } catch (e) {
+    ElMessage.error('保存失败：' + e)
+  }
 }
 
 async function loadDocs(p = 0) {
@@ -262,6 +305,7 @@ function deleteKb() {
 const upDialog = ref(false)
 const upFolder = ref('')
 const upFiles = ref([])
+const upTags = ref([])
 const upBusy = ref(false)
 const fileInput = ref(null)
 
@@ -284,6 +328,7 @@ function openUpload() {
   if (!currentId.value) return
   upFolder.value = ROOT_DIR
   upFiles.value = []
+  upTags.value = []
   upDialog.value = true
 }
 
@@ -301,6 +346,7 @@ async function doUpload() {
     const dir = upFolder.value === ROOT_DIR ? '' : upFolder.value
     const url = `/api/kb/${currentId.value}/upload?folder=${encodeURIComponent(dir)}`
       + `&name=${encodeURIComponent(f.name)}`
+      + (upTags.value.length ? `&tags=${encodeURIComponent(upTags.value.join(','))}` : '')
     try {
       const res = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f,
@@ -363,10 +409,19 @@ function fsPick() {
 const collapsed = ref({})
 const flatTree = computed(() => {
   const rows = []
+  const filtering = tagFilter.value.length > 0
   function walk(nodes, depth) {
     for (const n of nodes) {
-      rows.push({ ...n, depth })
-      if (n.type === 'folder' && n.children && !collapsed.value[n.path]) walk(n.children, depth + 1)
+      if (n.type === 'folder') {
+        const start = rows.length
+        rows.push({ ...n, depth })
+        if (!collapsed.value[n.path]) walk(n.children, depth + 1)
+        // 标签筛选时，没有任何命中后代的空文件夹直接隐藏
+        if (filtering && rows.length === start + 1) rows.length = start
+      } else {
+        if (filtering && !hasTag(n.path)) continue
+        rows.push({ ...n, depth })
+      }
     }
   }
   walk(tree.value.children || [], 0)
@@ -427,6 +482,10 @@ const failedList = computed(() => st.value?.last?.failed || [])
     <el-main class="kbmain">
       <div class="kbhead">
         <el-text tag="b" size="large">{{ tree.name || currentKb?.name || '知识库' }}</el-text>
+        <el-select v-if="knownTags.length" v-model="tagFilter" multiple collapse-tags
+                   placeholder="按标签筛选" clearable size="small" style="width:170px">
+          <el-option v-for="t in knownTags" :key="t" :label="t" :value="t" />
+        </el-select>
         <el-button size="small" type="primary" plain :disabled="!currentId" @click="openUpload">
           <el-icon style="margin-right:4px"><Upload /></el-icon>上传文档
         </el-button>
@@ -546,11 +605,18 @@ const failedList = computed(() => st.value?.last?.failed || [])
                   <span v-else-if="n.type === 'file'" class="st ok">✓</span>
                   <span v-else-if="n.status && n.status !== 'ok'" class="st" :class="stMeta(n).cls">{{ stMeta(n).text }}</span>
                 </span>
+                <span class="doc-tags" v-if="n.type === 'file' && tagsOf(n.path).length">
+                  <span v-for="t in tagsOf(n.path).slice(0, 3)" :key="t" class="dtag" :title="t">{{ t }}</span>
+                  <span v-if="tagsOf(n.path).length > 3" class="dtag more">+{{ tagsOf(n.path).length - 3 }}</span>
+                </span>
                 <span class="cnt">
                   <template v-if="n.type === 'folder'">{{ n.fileCount || 0 }} 文件<template v-if="n.chunkSum"> · {{ n.chunkSum }} 块</template></template>
                   <template v-else-if="n.chunkCount">{{ n.chunkCount }} 分块</template>
                 </span>
                 <span class="rowops" v-if="n.type === 'file'">
+                  <el-tooltip content="编辑标签" placement="top">
+                    <el-icon class="del" @click.stop="openTagEdit(n)"><PriceTag /></el-icon>
+                  </el-tooltip>
                   <el-tooltip content="从知识库删除该文件" placement="top">
                     <el-icon class="del" @click.stop="removeFile(n)"><Delete /></el-icon>
                   </el-tooltip>
@@ -603,6 +669,13 @@ const failedList = computed(() => st.value?.last?.failed || [])
             <el-option v-for="o in folderOptions" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
         </el-form-item>
+        <el-form-item label="标签">
+          <el-select v-model="upTags" multiple filterable allow-create default-first-option
+                     placeholder="可选；回车添加，如：上线方案、需求规格" style="width:100%">
+            <el-option v-for="t in knownTags" :key="t" :label="t" :value="t" />
+          </el-select>
+          <div class="formhint">打了标签的文档可在文件树按标签筛选，也能在问答 / 检索时按标签缩小范围</div>
+        </el-form-item>
         <el-form-item label="文件">
           <div style="width:100%">
             <input ref="fileInput" type="file" multiple hidden @change="pickFiles" />
@@ -622,6 +695,20 @@ const failedList = computed(() => st.value?.last?.failed || [])
         <el-button type="primary" :loading="upBusy" :disabled="!upFiles.length" @click="doUpload">
           上传{{ upFiles.length ? ` ${upFiles.length} 个` : '' }}
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 标签编辑对话框 -->
+    <el-dialog v-model="tagEdit.show" title="编辑文档标签" width="480px">
+      <div class="tagpath">{{ tagEdit.path }}</div>
+      <el-select v-model="tagEdit.tags" multiple filterable allow-create default-first-option
+                 placeholder="回车添加标签" style="width:100%;margin-top:10px">
+        <el-option v-for="t in knownTags" :key="t" :label="t" :value="t" />
+      </el-select>
+      <div class="formhint">清空全部标签即清除该文档的标签；标签用于检索过滤，不参与分词</div>
+      <template #footer>
+        <el-button @click="tagEdit.show = false">取消</el-button>
+        <el-button type="primary" @click="saveTags">保存</el-button>
       </template>
     </el-dialog>
 
@@ -741,7 +828,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
 .fsnode{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;font-size:13px}
 .fsnode:hover{background:var(--el-fill-color-light)}
 :deep(.clickable){cursor:pointer}
-.rowops{width:24px;flex:0 0 24px;display:flex;justify-content:center;opacity:0;transition:opacity var(--t-fast) var(--ease)}
+.rowops{width:48px;flex:0 0 48px;display:flex;justify-content:center;gap:6px;opacity:0;transition:opacity var(--t-fast) var(--ease)}
 .tnode:hover .rowops{opacity:1}
 .rowops .del{font-size:13px;color:var(--el-text-color-secondary);cursor:pointer}
 .rowops .del:hover{color:var(--el-color-danger)}
@@ -751,4 +838,9 @@ const failedList = computed(() => st.value?.last?.failed || [])
 .upfile:last-child{border-bottom:0}
 .upfile .upn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--el-text-color-primary)}
 .upfile .ups{color:var(--el-text-color-secondary);font-variant-numeric:tabular-nums}
+.doc-tags{display:flex;gap:4px;margin-left:6px;flex:0 0 auto;min-width:0}
+.dtag{font-size:11px;line-height:1;padding:3px 6px;border-radius:4px;background:var(--el-color-primary-light-9);
+  color:var(--el-color-primary);max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dtag.more{background:var(--el-fill-color);color:var(--el-text-color-secondary)}
+.tagpath{font-size:var(--fs-xs);color:var(--el-text-color-secondary);word-break:break-all}
 </style>

@@ -32,12 +32,15 @@ public class KbController {
     private final KbRegistry registry;
     private final IndexBuilder builder;
     private final HybridSearchService searchSvc;
+    private final kbapp.retrieve.DocMetaStore docMeta;
     private static final Logger log = LoggerFactory.getLogger(KbController.class);
 
-    public KbController(KbRegistry registry, IndexBuilder builder, HybridSearchService searchSvc) {
+    public KbController(KbRegistry registry, IndexBuilder builder, HybridSearchService searchSvc,
+                        kbapp.retrieve.DocMetaStore docMeta) {
         this.registry = registry;
         this.builder = builder;
         this.searchSvc = searchSvc;
+        this.docMeta = docMeta;
     }
 
     @GetMapping("/s")
@@ -344,6 +347,7 @@ public class KbController {
     public Map<String, Object> upload(@PathVariable String id,
                                       @RequestParam("name") String name,
                                       @RequestParam(defaultValue = "") String folder,
+                                      @RequestParam(defaultValue = "") String tags,
                                       jakarta.servlet.http.HttpServletRequest req) {
         Map<String, Object> m = new LinkedHashMap<>();
         KbRegistry.KbEntry kb = registry.byId(id);
@@ -379,6 +383,12 @@ public class KbController {
             m.put("ok", true);
             m.put("path", root.relativize(target).toString().replace('\\', '/'));
             m.put("size", n);
+            // 上传时顺带落标签（逗号分隔），不阻塞上传结果
+            List<String> tagList = splitTags(tags);
+            if (!tagList.isEmpty()) {
+                docMeta.setTagsBulk(kb.id(), Map.of(m.get("path").toString(), tagList), "upload");
+                m.put("tags", tagList);
+            }
         } catch (IOException e) {
             m.put("ok", false);
             m.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
@@ -401,6 +411,7 @@ public class KbController {
         }
         try {
             Files.delete(target);
+            docMeta.removeDoc(kb.id(), relPath.replace('\\', '/'));
             // 清理因此变空的目录，避免树里留下空壳
             Path parent = target.getParent();
             while (parent != null && !parent.equals(root)) {
@@ -453,6 +464,7 @@ public class KbController {
         List<String> leftover = new ArrayList<>(deleteTree(registry.indexDir(e)));
         leftover.addAll(deleteTree(registry.docsRoot(e)));
         registry.remove(id);
+        docMeta.dropKb(id);
         m.put("ok", true);
         m.put("leftoverCount", leftover.size());
         m.put("leftover", leftover.size() > 20 ? leftover.subList(0, 20) : leftover);
@@ -484,5 +496,57 @@ public class KbController {
             });
         }
         return failed;
+    }
+
+    // ───────────────────────── 文档元数据（标签） ─────────────────────────
+
+    /** 整库的标签表：{tags:[全库标签], docs:{path:{tags,source,updatedAt}}}。 */
+    @GetMapping("/{id}/docmeta")
+    public Map<String, Object> docMetaList(@PathVariable String id) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        KbRegistry.KbEntry kb = registry.byId(id);
+        if (kb == null) { m.put("ok", false); m.put("error", "知识库不存在"); return m; }
+        m.put("ok", true);
+        m.put("tags", docMeta.allTags(kb.id()));
+        Map<String, Object> docs = new LinkedHashMap<>();
+        for (var e : docMeta.all(kb.id()).entrySet()) {
+            Map<String, Object> d = new LinkedHashMap<>();
+            d.put("tags", e.getValue().tags());
+            d.put("source", e.getValue().source());
+            d.put("updatedAt", e.getValue().updatedAt());
+            docs.put(e.getKey(), d);
+        }
+        m.put("docs", docs);
+        return m;
+    }
+
+    public record DocTagsBody(String path, List<String> tags) {}
+
+    /** 设置单个文档的标签；tags 为空 = 清除。 */
+    @PostMapping("/{id}/docmeta")
+    public Map<String, Object> docMetaSet(@PathVariable String id, @RequestBody DocTagsBody body) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        KbRegistry.KbEntry kb = registry.byId(id);
+        if (kb == null) { m.put("ok", false); m.put("error", "知识库不存在"); return m; }
+        if (body == null || body.path() == null || body.path().isBlank()) {
+            m.put("ok", false); m.put("error", "缺少 path"); return m;
+        }
+        String path = body.path().trim().replace('\\', '/');
+        docMeta.setTags(kb.id(), path, body.tags(), "manual");
+        m.put("ok", true);
+        m.put("path", path);
+        m.put("tags", docMeta.tagsOf(kb.id(), path));
+        return m;
+    }
+
+    /** 逗号/中文逗号分隔 → 去空去重。 */
+    private static List<String> splitTags(String s) {
+        List<String> out = new ArrayList<>();
+        if (s == null || s.isBlank()) return out;
+        for (String t : s.split("[,，;；]")) {
+            String v = t.trim();
+            if (!v.isEmpty() && !out.contains(v)) out.add(v);
+        }
+        return out;
     }
 }

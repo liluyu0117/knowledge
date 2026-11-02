@@ -3,6 +3,7 @@ package kbapp.mcp;
 import kbapp.config.ConfigService;
 import kbapp.ingest.IndexSchema;
 import kbapp.kb.KbRegistry;
+import kbapp.retrieve.DocMetaStore;
 import kbapp.retrieve.HybridSearchService;
 import kbapp.retrieve.SearchHit;
 import org.apache.lucene.index.DirectoryReader;
@@ -43,11 +44,14 @@ public class KbSearchTools {
     private final HybridSearchService search;
     private final KbRegistry registry;
     private final ConfigService config;
+    private final DocMetaStore docMeta;
 
-    public KbSearchTools(HybridSearchService search, KbRegistry registry, ConfigService config) {
+    public KbSearchTools(HybridSearchService search, KbRegistry registry, ConfigService config,
+                         DocMetaStore docMeta) {
         this.search = search;
         this.registry = registry;
         this.config = config;
+        this.docMeta = docMeta;
     }
 
     // ───────────────────────── 工具 ─────────────────────────
@@ -86,7 +90,8 @@ public class KbSearchTools {
             @ToolParam(required = false, description = "知识库 id 或名称（kb_list 返回）；省略则用第一个库") String kbId,
             @ToolParam(required = false, description = "返回片段数，默认 8，上限 30") Integer topK,
             @ToolParam(required = false, description = "限定子目录（相对库根，如「两翼/上线方案」）；省略则全库") String folder,
-            @ToolParam(required = false, description = "每个文档最多返回几个片段，默认 3") Integer maxPerDoc) {
+            @ToolParam(required = false, description = "每个文档最多返回几个片段，默认 3") Integer maxPerDoc,
+            @ToolParam(required = false, description = "只返回带这些标签（任一命中即可）的文档，逗号分隔，如「上线方案,需求」；标签清单先用 kb_tags 或管理页确认") String tags) {
 
         Map<String, Object> out = new LinkedHashMap<>();
         if (!enabled(out)) return out;
@@ -98,9 +103,10 @@ public class KbSearchTools {
         int k = clamp(topK == null ? 8 : topK, 1, MAX_TOP_K);
         int mpd = clamp(maxPerDoc == null ? 3 : maxPerDoc, 1, 10);
         String folderParam = folder == null || folder.isBlank() ? null : folder.trim();
+        List<String> tagList = splitTags(tags);
 
         try {
-            HybridSearchService.Result r = search.search(query, k, folderParam, mpd, true, kb.id());
+            HybridSearchService.Result r = search.search(query, k, folderParam, mpd, true, kb.id(), tagList);
             List<Map<String, Object>> results = new ArrayList<>();
             for (SearchHit h : r.hits()) {
                 Map<String, Object> m = new LinkedHashMap<>();
@@ -119,11 +125,17 @@ public class KbSearchTools {
             out.put("total", results.size());
             out.put("rerankUsed", r.rerankUsed());
             out.put("dropped", r.dropped());
+            if (!tagList.isEmpty()) out.put("tagsFilter", tagList);
             if (!r.expanded().isEmpty()) out.put("expandedTerms", r.expanded());
             if (results.isEmpty()) {
-                out.put("hint", r.dropped() > 0
-                        ? "有 " + r.dropped() + " 个片段相关度低于阈值被丢弃，换个更具体的问法或换关键词再试"
-                        : "该库没有命中；可先用 kb_docs 确认文档是否存在、是否已建索引");
+                if (!tagList.isEmpty()) {
+                    int n = docMeta.pathsWithAnyTag(kb.id(), tagList).size();
+                    out.put("hint", "标签 " + tagList + " 范围内共 " + n + " 篇文档，但没有与该问题相关的片段；可放宽标签条件或换个问法");
+                } else if (r.dropped() > 0) {
+                    out.put("hint", "有 " + r.dropped() + " 个片段相关度低于阈值被丢弃，换个更具体的问法或换关键词再试");
+                } else {
+                    out.put("hint", "该库没有命中；可先用 kb_docs 确认文档是否存在、是否已建索引");
+                }
             }
             out.put("results", results);
         } catch (Exception e) {
@@ -298,6 +310,50 @@ public class KbSearchTools {
             out.put("chunks", kept);
         } catch (Exception e) {
             return fail(out, "读取失败：" + brief(e), "确认该库索引存在；必要时重建索引");
+        }
+        return out;
+    }
+
+    private static List<String> splitTags(String s) {
+        List<String> out = new ArrayList<>();
+        if (s == null || s.isBlank()) return out;
+        for (String t : s.split("[,，;；]")) {
+            String v = t.trim();
+            if (!v.isEmpty() && !out.contains(v)) out.add(v);
+        }
+        return out;
+    }
+
+    @Tool(name = "kb_tags",
+          description = "列出知识库的全部标签及每个标签下的文档数。需要按标签缩小检索范围时，先用它确认标签名，再把这些标签传给 kb_search 的 tags 参数")
+    public Map<String, Object> kbTags(
+            @ToolParam(required = false, description = "知识库 id 或名称；省略则用第一个库") String kbId) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (!enabled(out)) return out;
+        KbRegistry.KbEntry kb = resolve(kbId);
+        if (kb == null) return noKb(out, kbId);
+        Map<String, Integer> byTag = new LinkedHashMap<>();
+        int tagged = 0;
+        for (var e : docMeta.all(kb.id()).entrySet()) {
+            if (e.getValue().tags().isEmpty()) continue;
+            tagged++;
+            for (String t : e.getValue().tags()) byTag.merge(t, 1, Integer::sum);
+        }
+        out.put("ok", true);
+        out.put("kbId", kb.id());
+        out.put("kbName", kb.name());
+        out.put("tagCount", byTag.size());
+        out.put("taggedDocs", tagged);
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (var e : byTag.entrySet()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("tag", e.getKey());
+            m.put("docs", e.getValue());
+            list.add(m);
+        }
+        out.put("tags", list);
+        if (byTag.isEmpty()) {
+            out.put("hint", "该库还没有标签；在知识库管理页给文档打标签，或上传时带上标签");
         }
         return out;
     }

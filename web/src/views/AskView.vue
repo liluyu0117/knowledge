@@ -86,6 +86,18 @@ async function applyAgentScope(aid) {
   } catch (e) {
     folders.value = []
   }
+  loadKbTags()
+}
+
+// ── 标签过滤（可选）：只检索带所选标签的文档 ──
+const askTags = ref([])
+const kbAllTags = ref([])
+async function loadKbTags() {
+  askTags.value = []
+  try {
+    const r = await api.get('/api/kb/' + agentKbId() + '/docmeta')
+    kbAllTags.value = r.ok ? (r.tags || []) : []
+  } catch { kbAllTags.value = [] }
 }
 function onAgentChange(v) {
   agentId.value = v
@@ -273,6 +285,7 @@ async function ask(qOverride) {
     {
       question: q, folder: activeFolder.value, sessionId: currentId.value,
       agentId: agentId.value, topK: topK.value, style: styleMode.value,
+      tags: askTags.value.length ? [...askTags.value] : undefined,
     },
     (text) => { ans.content += text; scrollBottom() },
     async (done) => {
@@ -617,6 +630,19 @@ function onBodyClick(e, m) {
             </template>
           </el-dropdown>
 
+          <el-popover v-if="kbAllTags.length" trigger="click" width="260" placement="top-start">
+            <template #reference>
+              <span class="chip" :class="{ on: askTags.length }"
+                    :title="'标签过滤 · ' + currentKbName">
+                标签{{ askTags.length ? `：${askTags.length}` : '' }}
+              </span>
+            </template>
+            <el-checkbox-group v-model="askTags" class="tagpick">
+              <el-checkbox v-for="t in kbAllTags" :key="t" :value="t">{{ t }}</el-checkbox>
+            </el-checkbox-group>
+            <div class="tagtip">只检索带所选标签（任一命中）的文档</div>
+          </el-popover>
+
           <el-dropdown trigger="click" @command="(v) => (topK = v)">
             <span class="chip">片段 {{ topK }}</span>
             <template #dropdown>
@@ -783,6 +809,10 @@ function onBodyClick(e, m) {
   border:1px solid var(--line);background:var(--paper);color:var(--ink2);font-size:var(--fs-xs);
   cursor:pointer;user-select:none;white-space:nowrap;transition:all var(--t-fast) var(--ease)}
 .chip:hover{border-color:var(--accent);color:var(--accent)}
+.chip.on{border-color:var(--accent);color:var(--accent);background:var(--el-color-primary-light-9)}
+.tagpick{display:flex;flex-direction:column;gap:0;max-height:220px;overflow:auto}
+.tagpick .el-checkbox{height:26px;margin-right:0}
+.tagtip{font-size:var(--fs-2xs);color:var(--el-text-color-secondary);margin-top:6px}
 .chip.busy{opacity:.6;pointer-events:none}
 .chip .el-icon{font-size:13px}
 .bar .grow{flex:1}

@@ -61,8 +61,14 @@ onMounted(async () => {
 function reloadScope() {
   api.get('/api/docs/folders?kbId=' + kbId.value)
     .then((f) => { folders.value = f; folder.value = '' }).catch(() => {})
+  api.get('/api/kb/' + kbId.value + '/docmeta')
+    .then((m) => { kbTags.value = m.ok ? (m.tags || []) : []; selTags.value = [] }).catch(() => {})
   loadFlags()
 }
+
+// ── 标签过滤 ──
+const kbTags = ref([])
+const selTags = ref([])
 
 async function run() {
   if (!q.value.trim() || busy.value) return
@@ -70,6 +76,7 @@ async function run() {
   try {
     const params = new URLSearchParams({ q: q.value, kbId: kbId.value })
     if (folder.value) params.set('folder', folder.value)
+    if (selTags.value.length) params.set('tags', selTags.value.join(','))
     r.value = await api.get('/api/search?' + params)
   } finally {
     busy.value = false
@@ -203,6 +210,14 @@ function evRowClass({ row }) {
         <span class="fl">检索范围</span>
         <el-check-tag :checked="folder === ''" @change="folder = ''">全部</el-check-tag>
         <el-check-tag v-for="f in folders" :key="f" :checked="folder === f" @change="folder = f">{{ f }}</el-check-tag>
+      </div>
+      <div class="scoperow" v-if="kbTags.length">
+        <span class="fl">标签过滤</span>
+        <el-check-tag :checked="selTags.length === 0" @change="selTags = []">不限</el-check-tag>
+        <el-check-tag v-for="t in kbTags" :key="t" :checked="selTags.includes(t)"
+                      @change="selTags.includes(t) ? selTags = selTags.filter((x) => x !== t) : selTags.push(t)">
+          {{ t }}
+        </el-check-tag>
       </div>
     </div>
 

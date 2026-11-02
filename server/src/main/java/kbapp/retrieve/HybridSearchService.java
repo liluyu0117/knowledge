@@ -34,6 +34,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 混合检索：BM25 与 KNN 双路召回 → RRF 融合 → 每文档去重 →（可选）rerank 重排 → 阈值过滤 → 高亮。
@@ -52,11 +53,13 @@ public class HybridSearchService {
     private final GlossaryStore glossary;
     private final ChunkFlagStore chunkFlags;
     private final kbapp.usage.UsageStats usage;
+    private final DocMetaStore docMeta;
 
     public HybridSearchService(SearcherService searcherService, ConfigService config,
                                EmbeddingClient embedding, kbapp.kb.KbRegistry registry,
                                RerankClient rerank, GlossaryStore glossary,
-                               ChunkFlagStore chunkFlags, kbapp.usage.UsageStats usage) {
+                               ChunkFlagStore chunkFlags, kbapp.usage.UsageStats usage,
+                               DocMetaStore docMeta) {
         this.searcherService = searcherService;
         this.config = config;
         this.embedding = embedding;
@@ -65,6 +68,7 @@ public class HybridSearchService {
         this.glossary = glossary;
         this.chunkFlags = chunkFlags;
         this.usage = usage;
+        this.docMeta = docMeta;
     }
 
     public record Result(List<SearchHit> hits, int candidatesKw, int candidatesVec, boolean vectorUsed,
@@ -78,6 +82,16 @@ public class HybridSearchService {
 
     public Result search(String query, Integer topK, String folder, Integer maxPerDoc, boolean withVector,
                          String kbId) {
+        return search(query, topK, folder, maxPerDoc, withVector, kbId, null);
+    }
+
+    /**
+     * 带标签过滤的检索：tags 非空时只返回带其中任一标签的文档。
+     * 过滤下推为 Lucene FILTER（TermInSetQuery on docPath），两路召回都受限，
+     * 不会出现「召回了 N 条再被筛掉」导致结果不足的问题。
+     */
+    public Result search(String query, Integer topK, String folder, Integer maxPerDoc, boolean withVector,
+                         String kbId, java.util.Collection<String> tags) {
         AppConfig cfg = config.get();
         int k = topK != null && topK > 0 ? topK : cfg.getRag().getTopK();
         int mpd = maxPerDoc != null && maxPerDoc > 0 ? maxPerDoc : cfg.getRag().getMaxPerDoc();
@@ -90,6 +104,20 @@ public class HybridSearchService {
         kbapp.kb.KbRegistry.KbEntry kb = registry.byId(kbId);
         if (kb == null) throw new IllegalStateException("知识库不存在: " + kbId);
         Path indexDir = registry.indexDir(kb);
+
+        // 标签过滤：取「带任一所选标签」的 path 集合；空集合 = 没有文档带这些标签，直接返回
+        List<String> tagList = tags == null ? List.of()
+                : tags.stream().filter(t -> t != null && !t.isBlank()).map(String::trim).distinct().toList();
+        org.apache.lucene.search.Query tagFilter = null;
+        if (!tagList.isEmpty()) {
+            Set<String> allowed = docMeta.pathsWithAnyTag(kb.id(), tagList);
+            if (allowed.isEmpty()) {
+                return new Result(List.of(), 0, 0, false, false, 0, List.of());
+            }
+            List<org.apache.lucene.util.BytesRef> terms = new ArrayList<>();
+            for (String p : allowed) terms.add(new org.apache.lucene.util.BytesRef(p));
+            tagFilter = new org.apache.lucene.search.TermInSetQuery(IndexSchema.DOC_PATH, terms);
+        }
 
         usage.inc("search");
         boolean wantRerank = rerank.enabled();
@@ -105,6 +133,12 @@ public class HybridSearchService {
             IndexSearcher searcher = mgr.acquire();
             try {
                 Query kwQuery = buildKwQuery(query, expanded, analyzer);
+                if (kwQuery != null && tagFilter != null) {
+                    kwQuery = new BooleanQuery.Builder()
+                            .add(kwQuery, BooleanClause.Occur.SHOULD)
+                            .add(tagFilter, BooleanClause.Occur.FILTER)
+                            .build();
+                }
                 List<ScoreDoc> kwHits = kwQuery == null ? List.of()
                         : List.of(searcher.search(kwQuery, fetch).scoreDocs);
 
@@ -114,7 +148,9 @@ public class HybridSearchService {
                     try {
                         float[] qv = embedding.embed(query);
                         if (qv != null && qv.length > 0) {
-                            Query vq = new KnnFloatVectorQuery(IndexSchema.VECTOR, qv, fetch);
+                            Query vq = tagFilter != null
+                                    ? new KnnFloatVectorQuery(IndexSchema.VECTOR, qv, fetch, tagFilter)
+                                    : new KnnFloatVectorQuery(IndexSchema.VECTOR, qv, fetch);
                             vecHits = List.of(searcher.search(vq, fetch).scoreDocs);
                             vectorUsed = true;
                         }

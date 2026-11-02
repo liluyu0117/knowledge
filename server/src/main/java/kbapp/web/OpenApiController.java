@@ -50,17 +50,18 @@ public class OpenApiController {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(m);
     }
 
-    public record SearchBody(String q, String kbId, Integer topK, String folder) {}
+    public record SearchBody(String q, String kbId, Integer topK, String folder, java.util.List<String> tags) {}
 
-    /** GET /api/v1/search?q=&kbId=&topK= —— 只要检索结果，不要 LLM。kbId 可传 id 或库名，缺省用第一个库。 */
+    /** GET /api/v1/search?q=&kbId=&topK=&tags= —— 只要检索结果，不要 LLM。kbId 可传 id 或库名，缺省用第一个库。 */
     @GetMapping("/search")
     public ResponseEntity<Map<String, Object>> searchGet(
             @RequestParam String q,
             @RequestParam(required = false) String kbId,
             @RequestParam(defaultValue = "5") int topK,
             @RequestParam(required = false) String folder,
+            @RequestParam(required = false) String tags,
             @RequestHeader(value = "X-API-Key", required = false) String key) {
-        return doSearch(q, kbId, topK, folder, key);
+        return doSearch(q, kbId, topK, folder, splitTags(tags), key);
     }
 
     @PostMapping("/search")
@@ -68,11 +69,11 @@ public class OpenApiController {
             @RequestBody SearchBody body,
             @RequestHeader(value = "X-API-Key", required = false) String key) {
         return doSearch(body.q(), body.kbId(),
-                body.topK() == null ? 5 : body.topK(), body.folder(), key);
+                body.topK() == null ? 5 : body.topK(), body.folder(), body.tags(), key);
     }
 
     private ResponseEntity<Map<String, Object>> doSearch(String q, String kbId, int topK,
-                                                         String folder, String key) {
+                                                         String folder, java.util.List<String> tags, String key) {
         if (!allowed(key)) return denied();
         if (q == null || q.isBlank()) {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -91,7 +92,7 @@ public class OpenApiController {
                 m.put("hint", "GET /api/v1/kbs 可列出全部 kbId；不传 kbId 时使用第一个库");
                 return ResponseEntity.badRequest().body(m);
             }
-            r = search.search(q, Math.min(Math.max(topK, 1), 30), folder, null, true, kb.id());
+            r = search.search(q, Math.min(Math.max(topK, 1), 30), folder, null, true, kb.id(), tags);
             for (var h : r.hits()) {
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("docPath", h.docPath());
@@ -112,9 +113,21 @@ public class OpenApiController {
         m.put("ok", true);
         m.put("query", q);
         m.put("kbId", kbId);
+        if (tags != null && !tags.isEmpty()) m.put("tags", tags);
         m.put("rerankUsed", r.rerankUsed());
         m.put("results", hits);
         return ResponseEntity.ok(m);
+    }
+
+    /** 逗号/中文逗号分隔 → 去空去重。 */
+    private static java.util.List<String> splitTags(String s) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (s == null || s.isBlank()) return out;
+        for (String t : s.split("[,，;；]")) {
+            String v = t.trim();
+            if (!v.isEmpty() && !out.contains(v)) out.add(v);
+        }
+        return out;
     }
 
     /** GET /api/v1/kbs —— 列出知识库，便于调用方知道有哪些 kbId。 */

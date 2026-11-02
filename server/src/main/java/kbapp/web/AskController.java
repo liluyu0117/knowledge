@@ -23,12 +23,12 @@ public class AskController {
     }
 
     public record AskBody(String question, String folder, String sessionId, String provider, String agentId,
-                          Integer topK, String style) {}
+                          Integer topK, String style, java.util.List<String> tags) {}
 
     @PostMapping(value = "/ask", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<AskEvent>> ask(@RequestBody AskBody body) {
         Flux<AskEvent> events = chat.ask(body.question(), body.folder(), body.sessionId(),
-                body.provider(), body.agentId(), body.topK(), body.style());
+                body.provider(), body.agentId(), body.topK(), body.style(), body.tags());
         return events.map(e -> {
             String type = e instanceof AskEvent.Delta ? "delta"
                     : e instanceof AskEvent.Done ? "done" : "error";

@@ -43,9 +43,9 @@ public class ChatService {
         this.usage = usage;
     }
 
-    /** agentId 可为空：为空时用全局 activeChat + 默认知识库。 */
+    /** agentId 可为空：为空时用全局 activeChat + 默认知识库。tags 非空时检索只取带任一标签的文档。 */
     public Flux<AskEvent> ask(String question, String folder, String sessionId, String providerName, String agentId,
-                              Integer topK, String style) {
+                              Integer topK, String style, java.util.List<String> tags) {
         usage.inc("ask");
         AppConfig cfg = config.get();
         String chatProvider = providerName;
@@ -99,7 +99,7 @@ public class ChatService {
         List<SearchHit> hits;
         HybridSearchService.Result found;
         try {
-            found = search.search(question, topK, folder, null, true, kbId);
+            found = search.search(question, topK, folder, null, true, kbId, tags);
             hits = found.hits();
         } catch (Exception e) {
             log.warn("检索失败", e);
