@@ -1,0 +1,68 @@
+/* Element Plus 主题：Cherry 风柔和靛蓝 */
+:root{
+    --el-color-primary:#6366F1;
+    --el-color-primary-light-3:#8A8CF5;
+    --el-color-primary-light-5:#A5A7F7;
+    --el-color-primary-light-7:#C7C8FA;
+    --el-color-primary-light-8:#DBDCFC;
+    --el-color-primary-light-9:#EEF0FE;
+    --el-color-primary-dark-2:#4F52D6;
+    --el-color-success:#22A06B;
+    --el-color-warning:#C77808;
+    --el-color-danger:#E5484D;
+    --el-color-error:#E5484D;
+    --el-border-radius-base:8px;
+    --el-border-color:#E9EAED;
+    --el-border-color-light:#F0F1F3;
+    --el-border-color-lighter:#F0F1F3;
+    --el-text-color-primary:#1F2329;
+    --el-text-color-regular:#51565F;
+    --el-text-color-secondary:#8F949E;
+    --el-fill-color-light:#F4F5F7;
+    --el-fill-color-blank:#FFFFFF;
+    --el-bg-color:#FFFFFF;
+    --el-bg-color-page:#F7F8FA;
+    --el-font-family:"Noto Sans SC","Segoe UI Variable Text","Segoe UI","PingFang SC",
+                      "Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+    --el-box-shadow-light:0 4px 16px rgba(31,35,41,.08);
+    --el-font-size-base:13.5px;
+    --el-font-size-small:12.5px;
+    --el-font-size-extra-small:11.5px;
+}
+
+/* ===================== 统一页面骨架 ===================== */
+/* 各页面统一用：.page > .page-head(.pt/.ps/.pact) + .page-body */
+.page{height:100%;display:flex;flex-direction:column;background:var(--paper);overflow:hidden}
+.page-head{flex:0 0 auto;display:flex;align-items:flex-start;gap:12px;padding:var(--page-y) var(--page-x) 12px}
+.page-head .ph-main{min-width:0}
+.page-head .pt{font-size:var(--fs-xl);font-weight:600;line-height:1.35;color:var(--ink);letter-spacing:0}
+.page-head .ps{font-size:var(--fs-xs);color:var(--ink3);margin-top:3px;line-height:1.5}
+.page-head .pact{margin-left:auto;display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.page-body{flex:1;min-height:0;overflow:auto;padding:0 var(--page-x) 24px;display:flex;flex-direction:column;gap:var(--gap)}
+
+/* 卡片内的标题块：标题独占一行，说明在其下，不再和标题挤在一行 */
+.sec-head{margin-bottom:12px}
+.sec-title{font-size:var(--fs-md);font-weight:600;color:var(--ink);letter-spacing:0;line-height:1.4}
+.sec-sub{font-size:var(--fs-xs);color:var(--ink3);margin-top:4px;line-height:1.6}
+
+/* 图标导航栏 */
+.rail{background:#FBFBFC;border-right:1px solid var(--line)}
+
+/* 中文界面里 400 字重偏细，控件统一提到 500，层级更清楚 */
+.el-button{font-weight:500}
+.el-tabs__item{font-weight:500}
+.el-tag{font-weight:500}
+.el-table th.el-table__cell{font-weight:600}
+.el-dialog__title{font-weight:600;letter-spacing:0}
+.rail-item{
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+    width:48px;height:52px;margin:4px auto;border-radius:12px;cursor:pointer;
+    color:var(--ink2);text-decoration:none;transition:.18s var(--ease);
+    font-size:var(--fs-2xs);
+}
+.rail-item:hover{background:#F0F1F4;color:var(--ink)}
+.rail-item.on{background:var(--accent-soft);color:var(--accent)}
+.rail-item .el-icon{font-size:19px}
+
+/* 消息 */
+.el-message{max-width:420px}

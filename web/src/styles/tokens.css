@@ -1,0 +1,62 @@
+/* Cherry 风设计令牌：冷灰画布 + 白面板 + 柔和靛蓝 */
+:root{
+    --paper:#F7F8FA;        /* 页面画布（冷灰） */
+    --mist:#FBFBFC;         /* 侧栏面板 */
+    --card:#FFFFFF;
+    --ink:#1F2329;
+    --ink2:#51565F;
+    --ink3:#8F949E;
+    --line:#E9EAED;
+    --line-soft:#F0F1F3;
+    --accent:#6366F1;
+    --accent-soft:#EEF0FE;
+    --mint:#22A06B; --amber:#C77808; --rose:#E5484D;
+    --radius-lg:14px; --radius:12px; --radius-sm:8px;
+    --shadow-lift:0 4px 16px rgba(31,35,41,.06);
+    /* 统一字阶：全站只用这 8 档，避免 10.3/11.8/12.3 这类碎片值 */
+    --fs-2xs:11px;      /* 角标、等宽元信息 */
+    --fs-xs:12px;       /* 辅助说明、表格、小标签 */
+    --fs-sm:13px;       /* 列表项、次级正文 */
+    --fs-base:13.5px;   /* 正文 */
+    --fs-md:14px;       /* 强调正文、表单 */
+    --fs-lg:16px;       /* 区块标题 */
+    --fs-xl:18px;       /* 页面标题 */
+    --fs-2xl:22px;      /* 大数字 */
+    /* 行高：正文 1.65，文档阅读 1.85 */
+    --lh-tight:1.45; --lh-base:1.65; --lh-loose:1.85;
+    /* 页面骨架间距 */
+    --page-x:32px; --page-y:22px; --gap:14px;
+    --serif:var(--sans);
+    /* 中文优先用思源黑体（Noto Sans SC，可变字重），拉丁/数字回落到 Segoe UI Variable，
+       Windows 无 Noto 时退到雅黑，macOS 用苹方 —— 保证三端字形一致且不发虚 */
+    --sans:"Noto Sans SC","Segoe UI Variable Text","Segoe UI","PingFang SC",
+           "Microsoft YaHei UI","Microsoft YaHei","Helvetica Neue",system-ui,sans-serif;
+    --mono:"Cascadia Code","JetBrains Mono","Noto Sans Mono",Consolas,monospace;
+    --ease:cubic-bezier(.25,.8,.3,1);
+    --t-fast:.18s; --t-med:.28s;
+}
+html,body,#app{margin:0;height:100%}
+body{
+    font-family:var(--sans);
+    background:var(--paper);
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+    -moz-osx-font-smoothing:grayscale;
+    text-rendering:optimizeLegibility;
+    font-size:14px;
+    line-height:1.6;
+    letter-spacing:.01em;   /* 中文密排略放开一点，长文更透气 */
+    font-feature-settings:"kern" 1,"liga" 1;
+}
+/* 标题与强调：收紧字距、加深字重，避免中文默认过散 */
+h1,h2,h3,h4,h5{letter-spacing:0;line-height:1.4;font-weight:600}
+b,strong{font-weight:600}
+/* 数字统一等宽对齐（统计、分块数、耗时） */
+.tnum,time,.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+code,kbd,pre,.mono{font-family:var(--mono);font-size:.92em;letter-spacing:0}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#D9DBE0;border-radius:4px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+@media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{transition-duration:.01ms !important;animation-duration:.01ms !important}
+}

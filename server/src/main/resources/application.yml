@@ -1,0 +1,23 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: kb-server
+  servlet:
+    multipart:
+      enabled: false
+  ai:
+    mcp:
+      server:
+        name: kb
+        version: 0.1.0
+        type: SYNC
+        # webmvc SSE 端点：/mcp（默认 sse-message-endpoint /mcp/message）
+
+kb:
+  data-dir: .kb
+
+logging:
+  level:
+    kbapp: INFO

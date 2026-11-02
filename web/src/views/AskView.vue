@@ -1,0 +1,609 @@
+<script setup>
+import { ref, reactive, computed, nextTick, onMounted } from 'vue'
+import { api, askSse, downloadText } from '../api'
+import { preview } from '../store/preview'
+import { mdToHtml } from '../utils/md'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft } from '@element-plus/icons-vue'
+
+const sessions = ref([])
+const currentId = ref('')
+const messages = ref([]) // {role, content, sources?}
+const question = ref('')
+const generating = ref(false)
+const follow = ref(true)
+const chatEl = ref(null)
+let abortCtl = null
+const folders = ref([])
+const activeFolder = ref('')
+const agentKbs = ref([{ id: 'default', name: '默认知识库' }])
+const settings = ref(null)
+const showArchived = ref(false)
+const renaming = ref('')
+const renameText = ref('')
+
+const activeList = computed(() => sessions.value.filter((s) => !s.archived))
+const archivedList = computed(() => sessions.value.filter((s) => s.archived))
+const sessQ = ref('')
+const agentId = ref('')   // 当前选中的智能体（不再有「默认助手」兜底，必选其一）
+const agentList = ref([])
+const agentDialog = ref(false)
+const agentForm = ref({})
+const editingAgentId = ref(null)
+const collapsed = ref({})
+const AGENT_COLORS = ['#6366F1', '#22A06B', '#C77808', '#E5484D', '#0EA5E9', '#D946EF', '#8F949E']
+
+const agentOf = (id) => agentList.value.find((x) => x.id === id) || null
+const agentKbId = () => {
+  const a = agentOf(agentId.value)
+  return (a && a.kbId) || 'default'
+}
+/** 当前检索范围所属知识库名（范围条标题用） */
+const currentKbName = computed(() => {
+  const id = agentKbId()
+  return agentKbs.value.find((k) => k.id === id)?.name || '默认知识库'
+})
+/** 会话已绑定的智能体：有值时模型与检索范围都由它决定 */
+const lockedAgent = computed(() => {
+  if (!currentId.value) return null
+  const s = sessions.value.find((x) => x.id === currentId.value)
+  return s?.agentId ? agentOf(s.agentId) : null
+})
+/** 范围条显示「全部」，内部空串表示不过滤 */
+const scopeValue = computed({
+  get: () => activeFolder.value || '全部',
+  set: (v) => { activeFolder.value = v === '全部' ? '' : v },
+})
+/** 按智能体所属知识库重算检索范围，默认「全部」 */
+async function applyAgentScope(aid) {
+  activeFolder.value = ''
+  try {
+    folders.value = await api.get('/api/docs/folders?kbId=' + ((agentOf(aid)?.kbId) || 'default'))
+  } catch (e) {
+    folders.value = []
+  }
+}
+function onAgentChange(v) {
+  agentId.value = v
+  applyAgentScope(v)
+}
+function loadAgents() {
+  api.get('/api/agents').then((a) => { agentList.value = a })
+}
+function openAgentDialog(agent) {
+  editingAgentId.value = agent?.id || null
+  agentForm.value = agent
+    ? { ...agent }
+    : { name: '', color: AGENT_COLORS[agentList.value.length % AGENT_COLORS.length],
+        description: '', provider: (settings.value?.providers || [])[0]?.name || '',
+        model: '', kbId: agentKbId(), systemPrompt: '' }
+  agentDialog.value = true
+}
+function saveAgent() {
+  const b = agentForm.value
+  if (!b.name.trim()) { ElMessage.warning('请填写智能体名称'); return }
+  const req = editingAgentId.value
+    ? api.putJson('/api/agents/' + editingAgentId.value, b)
+    : api.post('/api/agents', b)
+  req.then(() => {
+    agentDialog.value = false
+    loadAgents()
+    ElMessage.success(editingAgentId.value ? '智能体已更新' : '智能体已创建')
+  })
+}
+function deleteAgentFromDialog() {
+  if (!editingAgentId.value) return
+  ElMessageBox.confirm(`删除智能体「${agentForm.value.name}」？其会话将转给剩余的第一个智能体。`, '删除智能体', {
+    type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+  }).then(() => {
+    api.del('/api/agents/' + editingAgentId.value).then(() => {
+      agentDialog.value = false
+      const removed = editingAgentId.value
+      loadAgents().then(() => {
+        if (agentId.value === removed || !agentOf(agentId.value)) onAgentChange(agentList.value[0]?.id || '')
+      })
+      reloadSessions()
+      ElMessage.success('智能体已删除')
+    })
+  }).catch(() => {})
+}
+function genPrompt() {
+  const f = agentForm.value
+  if (!f.provider) { ElMessage.warning('请先选择厂商'); return }
+  f._generating = true
+  api.post('/api/agents/gen-prompt', { name: f.name, description: f.description, provider: f.provider, model: f.model })
+    .then((r) => {
+      if (r.ok) { agentForm.value.systemPrompt = r.prompt; ElMessage.success('提示词已生成，可自由修改') }
+      else ElMessage.error(r.error || '生成失败')
+    })
+    .finally(() => { f._generating = false })
+}
+
+const filteredActive = computed(() => {
+  const k = sessQ.value.trim()
+  return activeList.value.filter((s) => !k || s.title.includes(k))
+})
+// 会话按智能体分组（每个会话都必须归属某个智能体）
+const agentGroups = computed(() => {
+  const groups = agentList.value.map((a) => ({
+    key: a.id, name: a.name, color: a.color || '#6366F1', sessions: [],
+  }))
+  const map = new Map(groups.map((g) => [g.key, g]))
+  for (const s of filteredActive.value) {
+    // 智能体已被删除的历史会话，暂落在第一个智能体下（后端启动时会自动改绑）
+    const g = map.get(s.agentId) || groups[0]
+    if (g) g.sessions.push(s)
+  }
+  return groups
+})
+/** 当前将被使用的智能体（会话未建立时也能确定） */
+const activeAgent = computed(() => agentOf(agentId.value))
+/** 智能体绑定的知识库是否已被删除 */
+const kbMissing = computed(() => {
+  if (!agentKbs.value.length) return false
+  return !agentKbs.value.some((k) => k.id === agentKbId())
+})
+const filteredArchived = computed(() => {
+  const k = sessQ.value.trim()
+  return archivedList.value.filter((s) => !k || s.title.includes(k))
+})
+const scopeOptions = computed(() => ['全部', ...folders.value])
+const activeProvider = () => settings.value?.providers?.find((p) => p.name === settings.value?.activeChat)
+
+function pickProvider(name) {
+  api.putJson('/api/settings', { activeChat: name }).then((s) => { settings.value = s })
+}
+
+onMounted(async () => {
+  const results = await Promise.allSettled([
+    reloadSessions(),
+    loadAgents(),
+    api.get('/api/settings').then((s) => { settings.value = s }),
+    applyAgentScope(''),
+    api.get('/api/kb/s').then((k) => { agentKbs.value = k }),
+  ])
+  for (const r of results) if (r.status === 'rejected') console.warn('加载失败:', r.reason)
+  // 不再有「默认助手」：没有选中项时默认落到第一个智能体
+  if (!agentId.value && agentList.value.length) {
+    agentId.value = agentList.value[0].id
+    await applyAgentScope(agentId.value)
+  }
+})
+
+async function reloadSessions() {
+  sessions.value = await api.get('/api/sessions')
+}
+
+function groupOf(s) {
+  const d = new Date(s.updatedAt)
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const yest = new Date(today); yest.setDate(yest.getDate() - 1)
+  if (d >= today) return '今天'
+  if (d >= yest) return '昨天'
+  return '更早'
+}
+
+async function openSession(id) {
+  const s = sessions.value.find((x) => x.id === id)
+  currentId.value = id
+  messages.value = await api.get('/api/sessions/' + id)
+  // 回显会话绑定的智能体；未绑定或智能体已删除则落到第一个智能体
+  agentId.value = s?.agentId && agentOf(s.agentId) ? s.agentId : (agentList.value[0]?.id || '')
+  await applyAgentScope(agentId.value)
+  await nextTick(); scrollBottom()
+}
+
+function newSession() {
+  currentId.value = ''
+  messages.value = []
+  if (!agentId.value && agentList.value.length) agentId.value = agentList.value[0].id
+  applyAgentScope(agentId.value)
+}
+
+async function archiveSession(s, v) {
+  await api.post(`/api/sessions/${s.id}/archive?value=${v}`)
+  await reloadSessions()
+}
+
+function renameSession(s) {
+  ElMessageBox.prompt('重命名会话：', '重命名', {
+    inputValue: s.title, confirmButtonText: '保存', cancelButtonText: '取消',
+  }).then(({ value }) => {
+    const t = (value || '').trim()
+    if (!t || t === s.title) return
+    api.post(`/api/sessions/${s.id}/rename?title=${encodeURIComponent(t)}`).then(() => reloadSessions())
+  }).catch(() => {})
+}
+
+function commitRename(s) {
+  const t = renameText.value.trim()
+  renaming.value = ''
+  if (!t || t === s.title) return
+  api.post(`/api/sessions/${s.id}/rename?title=${encodeURIComponent(t)}`).then(() => reloadSessions())
+}
+
+function removeSession(s) {
+  ElMessageBox.confirm(`删除会话「${s.title}」及其全部消息？删除后不可恢复。`, '删除会话', {
+    type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+  }).then(() => {
+    api.del(`/api/sessions/${s.id}`).then(() => {
+      if (currentId.value === s.id) { currentId.value = ''; messages.value = [] }
+      reloadSessions()
+      ElMessage.success('会话已删除')
+    })
+  }).catch(() => {})
+}
+
+async function ask(qOverride) {
+  const q = (qOverride ?? question.value).trim()
+  if (!q || generating.value) return
+  if (qOverride === undefined) question.value = ''
+  generating.value = true
+  follow.value = true
+  messages.value.push({ role: 'user', content: q })
+  const ans = reactive({ role: 'assistant', content: '', sources: null, error: null, stopped: false })
+  messages.value.push(ans)
+  await nextTick(); scrollBottom()
+
+  abortCtl = new AbortController()
+  askSse(
+    { question: q, folder: activeFolder.value, sessionId: currentId.value, agentId: agentId.value },
+    (text) => { ans.content += text; scrollBottom() },
+    async (done) => {
+      generating.value = false
+      abortCtl = null
+      ans.sources = done.sources
+      currentId.value = done.sessionId
+      await reloadSessions()
+      scrollBottom()
+    },
+    (msg) => {
+      if (String(msg).includes('abort')) return
+      generating.value = false
+      abortCtl = null
+      ans.error = msg
+      scrollBottom()
+    },
+    abortCtl.signal,
+  )
+}
+
+function stopGen() {
+  if (abortCtl) abortCtl.abort()
+  generating.value = false
+  const last = messages.value[messages.value.length - 1]
+  if (last?.role === 'assistant') last.stopped = true
+}
+
+function copyAns(m) {
+  navigator.clipboard.writeText(m.content || '')
+  ElMessage.success('回答已复制')
+}
+
+function regen() {
+  if (generating.value) return
+  let q = ''
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i].role === 'user') { q = messages.value[i].content; break }
+  }
+  if (!q) return
+  while (messages.value.length && messages.value[messages.value.length - 1].role === 'assistant') {
+    messages.value.pop()
+  }
+  ask(q)
+}
+
+function onChatScroll() {
+  const el = chatEl.value
+  if (!el) return
+  const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+  follow.value = gap < 80
+}
+
+function scrollBottom() {
+  nextTick(() => {
+    if (follow.value && chatEl.value) chatEl.value.scrollTop = chatEl.value.scrollHeight
+  })
+}
+
+function onEnter(e) {
+  if (e.isComposing || e.keyCode === 229) return
+  ask()
+}
+
+function openSource(src) {
+  preview.value = { open: true, docPath: src.docPath, seq: src.seq }
+}
+
+function exportMd() {
+  const lastAns = [...messages.value].reverse().find((m) => m.role === 'assistant')
+  if (!lastAns) return
+  let md = ''
+  for (const m of messages.value) {
+    if (m.role === 'user') md += '## 问\n\n' + m.content + '\n\n'
+    else md += '## 答\n\n' + m.content + '\n\n'
+    if (m.sources?.length) {
+      md += '### 来源\n\n'
+      for (const s of m.sources) md += `- [${s.docTitle}](file://${s.docPath})（块 ${s.seq}）\n`
+      md += '\n'
+    }
+  }
+  downloadText('知识库问答.md', md)
+}
+
+function renderAns(m) {
+  if (!m) return ''
+  const inline = (s) => String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/\[(\d{1,2})\]/g, '<span class="cite" data-cite="$1">$1</span>')
+  return mdToHtml(m.content, { inline })
+}
+
+// 角标点击 → 打开对应来源预览
+function onBodyClick(e, m) {
+  const el = e.target.closest('.cite')
+  if (!el || !m.sources?.length) return
+  const n = parseInt(el.dataset.cite, 10)
+  const src = m.sources[n - 1]
+  if (src) openSource(src)
+}
+</script>
+
+<template>
+  <el-container class="qa">
+    <el-aside width="248px" class="sess">
+      <el-button class="new" @click="newSession">
+        <el-icon style="margin-right:5px"><Plus /></el-icon>新会话
+      </el-button>
+      <el-input v-model="sessQ" size="small" placeholder="搜索会话" clearable class="sessq">
+        <template #prefix><el-icon><Search /></el-icon></template>
+      </el-input>
+      <el-scrollbar class="sess-list">
+        <el-button class="newagent" size="small" @click="openAgentDialog(null)">🤖 新建智能体</el-button>
+        <template v-for="g in agentGroups" :key="g.key">
+          <div class="lab gh" @click="collapsed[g.key] = !collapsed[g.key]">
+            <span class="gdot" :style="{ background: g.color }"></span>
+            <span class="arr" :class="{ on: !collapsed[g.key] }">▸</span>{{ g.name }}
+            <span class="n">{{ g.sessions.length }}</span>
+            <el-icon v-if="g.key !== 'default'" class="gedit" title="编辑智能体"
+                     @click.stop="openAgentDialog(agentList.find((a) => a.id === g.key))"><EditPen /></el-icon>
+          </div>
+          <template v-if="!collapsed[g.key]">
+            <div v-for="s in g.sessions" :key="s.id" class="it" :class="{ on: s.id === currentId }" @click="openSession(s.id)">
+              <span class="t">{{ s.title }}</span>
+              <span class="ops">
+                <el-icon @click.stop="renameSession(s)" title="重命名"><EditPen /></el-icon>
+                <el-icon @click.stop="archiveSession(s, true)" title="归档"><Collection /></el-icon>
+              </span>
+              <div class="d">{{ s.updatedAt.slice(5, 16).replace('T', ' ') }}</div>
+            </div>
+          </template>
+        </template>
+        <el-empty v-if="!agentGroups.length" :description="agentList.length ? '还没有会话' : '先新建一个智能体'" :image-size="60" />
+        <template v-if="archivedList.length">
+          <div class="lab arch" @click="showArchived = !showArchived">
+            <el-icon><Collection /></el-icon>已归档
+            <span class="n">{{ archivedList.length }}</span>
+            <el-icon class="arr" :class="{ on: showArchived }"><ArrowDown /></el-icon>
+          </div>
+          <template v-if="showArchived">
+            <div v-for="s in filteredArchived" :key="s.id" class="it" @click="openSession(s.id)">
+              <span class="t">{{ s.title }}</span>
+              <span class="ops">
+                <el-icon @click.stop="archiveSession(s, false)" title="恢复"><RefreshLeft /></el-icon>
+                <el-icon @click.stop="removeSession(s)" title="删除"><Delete /></el-icon>
+              </span>
+              <div class="d">{{ s.updatedAt.slice(5, 10) }}</div>
+            </div>
+          </template>
+        </template>
+      </el-scrollbar>
+    </el-aside>
+
+    <el-main class="qa-main">
+      <div class="qa-top">
+        <el-text tag="b" size="large">{{ sessions.find((s) => s.id === currentId)?.title || '新会话' }}</el-text>
+        <el-tooltip :disabled="!lockedAgent" placement="bottom"
+                    content="该会话已绑定智能体，模型与检索范围随之固定；新建会话可重新选择">
+          <el-select :model-value="agentId" size="small" style="width:180px;margin-left:auto"
+                     :disabled="!!lockedAgent" placeholder="选择智能体" @change="onAgentChange">
+            <el-option v-for="a in agentList" :key="a.id" :value="a.id" :label="'🤖 ' + a.name" />
+          </el-select>
+        </el-tooltip>
+        <el-tag v-if="activeAgent?.provider" size="small" effect="plain" class="model-tag">
+          {{ activeAgent.provider }} · {{ activeAgent.model || '默认模型' }}
+        </el-tag>
+        <el-select v-else :model-value="settings?.activeChat" size="small" style="width:200px"
+                   @change="(v) => pickProvider(v)">
+          <template #label>{{ activeProvider()?.name || '未配置厂商' }} · {{ activeProvider()?.chatModel || '-' }}</template>
+          <el-option v-for="p in settings?.providers || []" :key="p.name" :value="p.name"
+                     :label="p.name + ' · ' + (p.chatModel || '')" />
+        </el-select>
+      </div>
+
+      <div class="chat-scroll" ref="chatEl" @scroll="onChatScroll">
+        <el-empty v-if="!messages.length" description="向知识库提问，例如“网络类资源申请需要哪些环节？”" />
+        <template v-for="(m, i) in messages" :key="i">
+          <el-alert v-if="m.role === 'user'" class="q" type="info" :closable="false"
+                    :title="m.content.length > 60 ? m.content.slice(0, 60) + '…' : m.content"
+                    :description="m.content.length > 60 ? m.content : undefined" />
+          <el-card v-else shadow="never" class="ans">
+            <template #header>
+              <div class="who">
+                <el-text size="small" type="info">{{ m.sources ? `基于 ${m.sources.length} 个知识库片段` : '回答' }}</el-text>
+                <el-tag v-if="m.stopped" size="small" type="warning" effect="plain">已停止</el-tag>
+                <el-button link size="small" @click="copyAns(m)">复制</el-button>
+                <el-button link size="small" @click="regen()">重新生成</el-button>
+                <el-button v-if="m.sources" link size="small" @click="exportMd">导出 MD</el-button>
+              </div>
+            </template>
+            <div class="body" v-html="renderAns(m)" @click="onBodyClick($event, m)"></div>
+            <el-skeleton v-if="generating && !m.content && !m.error && i === messages.length - 1" :rows="2" animated />
+            <el-alert v-if="m.error" type="error" :closable="false" :title="m.error" />
+            <div v-if="m.sources?.length" class="srcrow">
+              <el-text size="small" type="info">来源：</el-text>
+              <el-tag v-for="(s, j) in m.sources" :key="j" class="src" effect="plain"
+                      @click="openSource(s)">{{ j + 1 }}. {{ s.docTitle }}</el-tag>
+            </div>
+          </el-card>
+        </template>
+      </div>
+
+      <div v-if="!agentList.length" class="scope">
+        <el-text size="small" type="warning">还没有智能体，先新建一个再提问</el-text>
+        <el-button size="small" type="primary" @click="openAgentDialog(null)">＋ 新建智能体</el-button>
+      </div>
+      <div v-else class="scope">
+        <el-text size="small" type="info">检索范围 · {{ currentKbName }}</el-text>
+        <el-segmented v-model="scopeValue" :options="scopeOptions" size="small" />
+        <el-text v-if="lockedAgent" size="small" type="info" class="scope-hint">
+          跟随智能体「{{ lockedAgent.name }}」
+        </el-text>
+        <el-text v-if="kbMissing" size="small" type="danger">
+          所属知识库已被删除，请到「知识库」页重建，或编辑智能体改绑
+        </el-text>
+      </div>
+      <div class="askbar">
+        <el-input v-model="question" type="textarea" :rows="1" :autosize="{ minRows: 1, maxRows: 6 }"
+                  placeholder="向知识库提问，Enter 发送，Shift+Enter 换行…"
+                  @keydown.enter.exact.prevent="onEnter" />
+        <el-button circle :type="generating ? 'info' : 'primary'" :disabled="!agentList.length && !generating"
+                   @click="generating ? stopGen() : ask()">{{ generating ? '■' : '↑' }}</el-button>
+      </div>
+    </el-main>
+
+    <PreviewDrawer :target="preview" :kb-id="agentKbId()" @close="preview.open = false" />
+
+    <!-- 智能体新建/编辑对话框 -->
+    <el-dialog v-model="agentDialog" :title="editingAgentId ? '编辑智能体' : '新建智能体'" width="520px">
+      <el-form label-width="90px">
+        <el-form-item label="名称"><el-input v-model="agentForm.name" placeholder="例如：运维助手" /></el-form-item>
+        <el-form-item label="头像色">
+          <div style="display:flex;gap:6px">
+            <span v-for="c in AGENT_COLORS" :key="c" class="color-dot" :style="{ background: c }"
+                  :class="{ sel: agentForm.color === c }" @click="agentForm.color = c"></span>
+          </div>
+        </el-form-item>
+        <el-form-item label="描述"><el-input v-model="agentForm.description" placeholder="一句话介绍职责" /></el-form-item>
+        <el-form-item label="厂商">
+          <el-select v-model="agentForm.provider" style="width:100%">
+            <el-option v-for="p in settings?.providers || []" :key="p.name" :value="p.name" :label="p.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="模型"><el-input v-model="agentForm.model" placeholder="如 deepseek-chat" /></el-form-item>
+        <el-form-item label="知识库">
+          <el-select v-model="agentForm.kbId" style="width:100%">
+            <el-option v-for="k in agentKbs" :key="k.id" :value="k.id" :label="k.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="系统提示词">
+          <el-input v-model="agentForm.systemPrompt" type="textarea" :rows="4"
+                    placeholder="定义角色与回答风格；检索规则自动附加" />
+          <el-button size="small" style="margin-top:6px" :loading="agentForm._generating" @click="genPrompt">
+            ✨ AI 生成
+          </el-button>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button v-if="editingAgentId" type="danger" plain style="margin-right:auto"
+                   @click="deleteAgentFromDialog">删除智能体</el-button>
+        <el-button @click="agentDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveAgent">保存</el-button>
+      </template>
+    </el-dialog>
+  </el-container>
+</template>
+
+<style scoped>
+.qa{height:100%}
+.sess{border-right:1px solid var(--el-border-color-light);background:#FBFBFC;padding:12px 8px;display:flex;flex-direction:column}
+.sess .new{width:100%}
+.sess .sessq{margin-bottom:6px}
+.sess .sess-list{flex:1}
+.sess .lab{font-size:var(--fs-xs);color:var(--ink3);padding:9px 8px 5px;display:flex;align-items:center;gap:5px}
+.sess .lab.arch{cursor:pointer;user-select:none;border-radius:6px;transition:background var(--t-fast) var(--ease)}
+.sess .lab.arch:hover{background:#F0F1F4;color:var(--ink)}
+.sess .lab.arch .n{margin-left:auto;font-size:var(--fs-2xs);color:var(--ink3)}
+.sess .lab.arch .arr{margin-left:auto;font-size:11px;color:var(--ink3);transition:transform var(--t-med) var(--ease)}
+.sess .lab.arch:hover .arr{color:var(--accent)}
+.sess .lab.arch .arr.on{transform:rotate(180deg)}
+.sess .it{position:relative;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:var(--fs-sm);line-height:1.5}
+.sess .it:hover{background:#F0F1F4}
+.sess .it.on{background:var(--accent-soft)}
+.sess .it.on .t{color:var(--accent);font-weight:600}
+.sess .it .t{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:46px}
+.sess .it:hover .t{padding-right:52px}
+.sess .it .ops{position:absolute;top:6px;right:6px;display:flex;gap:2px;opacity:0;transition:opacity var(--t-fast) var(--ease)}
+.sess .it:hover .ops{opacity:1}
+.sess .ops .el-icon{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;
+  font-size:13px;color:var(--ink3);background:#fff;border:1px solid var(--el-border-color);cursor:pointer}
+.sess .ops .el-icon:hover{color:var(--accent);border-color:var(--accent)}
+.sess .it .d{font-size:var(--fs-2xs);color:var(--ink3);margin-top:2px;font-variant-numeric:tabular-nums}
+.qa-main{display:flex;flex-direction:column;padding:0}
+.qa-top{display:flex;align-items:center;gap:12px;padding:var(--page-y) var(--page-x) 0;min-height:54px}
+.qa-top h3, .qa-top .el-text{font-family:var(--sans);font-size:var(--fs-xl);font-weight:600;letter-spacing:0;line-height:1.35}
+.chat-scroll{flex:1;overflow:auto;padding:18px var(--page-x) 20px;display:flex;flex-direction:column;gap:16px}
+/* 提问：主色胶囊 */
+.q{width:fit-content;margin-left:auto;max-width:66%;flex-shrink:0;background:var(--accent);color:#fff;
+  padding:10px 16px;border-radius:var(--radius) var(--radius) 4px var(--radius);white-space:pre-wrap;
+  font-size:var(--fs-base);line-height:var(--lh-base)}
+/* 回答：档案摘录卡 —— 左侧书脊 */
+.ans{max-width:84%;flex-shrink:0;--el-card-border-color:var(--line);
+  border-left:3px solid var(--accent);border-radius:6px var(--radius) var(--radius) 6px;
+  padding:4px 6px 6px}
+.ans :deep(.el-card__header){padding:9px 18px;border-bottom:1px dashed var(--line-soft);background:var(--paper);
+  border-radius:6px var(--radius) 0 0}
+.ans :deep(.el-card__body){padding:14px 20px 16px}
+.who{display:flex;align-items:center;gap:8px}
+.who .el-button+.el-button{margin-left:0}
+.ans :deep(.cite){display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 4px;
+  border-radius:4px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;font-family:var(--mono);
+  vertical-align:1.5px;margin:0 2px;cursor:pointer}
+.ans :deep(.cite:hover){background:var(--ink)}
+/* EP 风格引用徽章：浅底描边，悬停填充主色 */
+.body :deep(.cite){
+  background:var(--el-color-primary-light-9);border:1px solid var(--el-color-primary-light-7);
+  color:var(--el-color-primary);box-shadow:none;
+}
+.body :deep(.cite:hover){
+  background:var(--el-color-primary);border-color:var(--el-color-primary);color:#fff;
+  transform:translateY(-1px);
+}
+.body{font-size:var(--fs-base);line-height:var(--lh-loose)}
+.body :deep(p){margin:0 0 9px}
+.body :deep(ul),.body :deep(ol){margin:0 0 8px;padding-left:20px}
+.body :deep(h2){font-family:var(--sans);margin:16px 0 8px;font-size:var(--fs-lg);font-weight:600}
+.body :deep(h3){font-family:var(--sans);margin:13px 0 6px;font-size:var(--fs-md);font-weight:600}
+.body :deep(h4){font-family:var(--sans);margin:12px 0 6px;font-size:var(--fs-base);font-weight:600}
+.body :deep(.md-table){border-collapse:collapse;width:100%;margin:10px 0;font-size:var(--fs-sm);table-layout:fixed}
+.body :deep(.md-table th),.body :deep(.md-table td){border:1px solid var(--el-border-color);padding:5px 10px;text-align:left;word-break:break-word;overflow-wrap:anywhere}
+.body :deep(.md-table th){background:var(--paper);font-weight:600}
+/* 防止长代码/链接/单词撑破卡片产生内部滚动条 */
+.body :deep(pre),.body :deep(code){white-space:pre-wrap;word-break:break-word;overflow-x:visible}
+.body :deep(a){word-break:break-all}
+.body :deep(img){max-width:100%}
+.body :deep(*){scrollbar-width:none}
+.body :deep(*)::-webkit-scrollbar{display:none}
+.srcrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed var(--line-soft)}
+.src{cursor:pointer;font-family:var(--sans);--el-tag-bg-color:var(--paper)}
+.thinking{display:flex;align-items:center;gap:6px;color:var(--ink3);font-size:var(--fs-xs);padding:4px 0}
+.thinking span{width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.4;animation:pulse 1.2s infinite}
+.thinking span:nth-child(2){animation-delay:.2s}
+.thinking span:nth-child(3){animation-delay:.4s}
+@keyframes pulse{0%,100%{opacity:.25;transform:scale(.85)}50%{opacity:1;transform:scale(1)}}
+.askbar{display:flex;align-items:flex-end;gap:10px;padding:10px var(--page-x) 18px;background:var(--paper)}
+.askbar :deep(.el-textarea__inner){border-radius:var(--radius-lg);padding:9px 14px;box-shadow:var(--shadow-lift)}
+.askbar :deep(.el-textarea__inner:focus){box-shadow:0 0 0 3px rgba(62,78,200,.10)}
+.askbar .el-button{height:40px;width:40px}
+.scope{display:flex;align-items:center;gap:8px;padding:0 var(--page-x) 6px;flex-wrap:wrap;background:var(--paper)}
+.newagent{width:100%;margin-bottom:4px}
+.sess .lab.gh .gdot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.sess .lab.gh .gedit{margin-left:auto;color:var(--ink3);cursor:pointer}
+.sess .lab.gh .gedit:hover{color:var(--accent)}
+.color-dot{width:20px;height:20px;border-radius:6px;cursor:pointer;border:2px solid transparent}
+.model-tag{font-size:var(--fs-xs);color:var(--ink2);background:var(--mist);border-color:var(--line)}
+.scope-hint{color:var(--accent);opacity:.85}
+.color-dot.sel{border-color:var(--ink)}
+</style>

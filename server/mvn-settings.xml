@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+    <mirrors>
+        <mirror>
+            <id>aliyun-central</id>
+            <name>Aliyun Central</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <mirrorOf>*,!spring-ai-*,!spring-plugins</mirrorOf>
+        </mirror>
+        <mirror>
+            <id>spring-milestones</id>
+            <name>Spring Milestones</name>
+            <url>https://repo.spring.io/milestone</url>
+            <mirrorOf>spring-ai-*,spring-plugins</mirrorOf>
+        </mirror>
+    </mirrors>
+    <localRepository>C:\Users\22920\.m2\repository</localRepository>
+</settings>

@@ -1,0 +1,754 @@
+<script setup>
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { api } from '../api'
+import { preview } from '../store/preview'
+import PreviewDrawer from '../components/PreviewDrawer.vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Folder, Document, Loading, Delete, Upload } from '@element-plus/icons-vue'
+
+const kbs = ref([])
+const currentId = ref('')
+const tree = ref({ name: '', root: '', stats: null, children: [] })
+const treeLoading = ref(false)
+const activeTab = ref('tree')
+const kbDialog = ref(false)
+const kbForm = ref({ name: '', path: '' })
+const fsDialog = ref(false)
+const fsCurrent = ref('')
+const fsDirs = ref([])
+
+// 文档检索
+const docsQ = ref('')
+const docs = ref({ total: 0, items: [] })
+const docsPage = ref(0)
+const docsSize = 20
+const docsLoading = ref(false)
+
+const currentKb = computed(() => kbs.value.find((k) => k.id === currentId.value))
+
+// ── 索引状态轮询：构建中 1s，空闲 15s ──
+const st = ref(null)            // 当前库状态响应
+let pollTimer = null
+let tick = 0
+let watchBuild = false          // 本页触发的构建，结束后弹结果
+const stats = computed(() => tree.value.stats || null)
+
+const live = computed(() => st.value?.live || null)
+const runningForThis = computed(() => !!st.value?.runningForThisKb)
+const building = computed(() => runningForThis.value
+  && ['scanning', 'parsing', 'embedding'].includes(live.value?.phase))
+const awaiting = computed(() => runningForThis.value && live.value?.phase === 'awaiting_confirm')
+const otherRunning = computed(() => !!st.value?.running && !st.value.runningForThisKb)
+
+const filePct = computed(() => {
+  const l = live.value
+  if (!l || !l.filesTotal) return 0
+  return Math.min(100, Math.round(l.filesDone * 100 / l.filesTotal))
+})
+const embedPct = computed(() => {
+  const l = live.value
+  if (!l || !l.needEmbed) return 0
+  return Math.min(100, Math.round(l.embedded * 100 / l.needEmbed))
+})
+
+const phaseLabel = computed(() => {
+  const p = live.value?.phase
+  if (p === 'scanning') return '扫描文件'
+  if (p === 'parsing') return '解析分块'
+  if (p === 'embedding') return '向量化'
+  if (p === 'awaiting_confirm') return '等待确认'
+  return ''
+})
+
+onMounted(async () => {
+  await reloadKbs()
+  if (kbs.value.length) selectKb(kbs.value[0])
+  await pollStatus()
+  schedule()
+})
+
+onUnmounted(() => clearTimeout(pollTimer))
+
+function schedule() {
+  clearTimeout(pollTimer)
+  const ms = st.value?.running ? 1000 : 15000
+  pollTimer = setTimeout(async () => {
+    await pollStatus()
+    schedule()
+  }, ms)
+}
+
+async function pollStatus() {
+  if (!currentId.value) return
+  try {
+    const s = await api.get('/api/index/status?kbId=' + encodeURIComponent(currentId.value))
+    const wasRunning = runningForThis.value
+    st.value = s
+    tick++
+    // 构建中每 3 个轮询周期刷新一次文件树，让状态与分块数跟着走
+    if (s.runningForThisKb && tick % 3 === 0) loadTree(currentId.value, true)
+
+    if (wasRunning && !s.running) {
+      await loadTree(currentId.value, true)
+      if (activeTab.value === 'docs') loadDocs(0)
+      if (watchBuild) {
+        watchBuild = false
+        const l = s.last
+        if (!l) return
+        if (l.phase === 'done') {
+          ElMessage.success(`构建完成：新增 ${l.added} · 更新 ${l.updated} · 跳过 ${l.skipped}`
+            + ` · 向量化 ${l.embedded} 块 · 耗时 ${fmtDur(l.durationMs)}`)
+        } else if (l.phase === 'cancelled') {
+          ElMessage.info('构建已取消，已完成的文件已保存')
+        } else if (l.phase === 'error') {
+          ElMessage.error('构建失败：' + (s.live?.error || '未知错误'))
+        }
+      }
+    }
+  } catch (e) { /* 后端未起时静默重试 */ }
+}
+
+function fmtNum(n) {
+  if (n == null) return '0'
+  return n >= 10000 ? (n / 10000).toFixed(1) + ' 万' : String(n)
+}
+
+function fmtTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+function fmtDur(ms) {
+  if (!ms || ms < 0) return '—'
+  if (ms < 1000) return ms + ' 毫秒'
+  const s = Math.round(ms / 1000)
+  if (s < 60) return s + ' 秒'
+  const m = Math.floor(s / 60)
+  const r = s % 60
+  return m + ' 分' + (r ? ' ' + r + ' 秒' : '')
+}
+
+// ── 操作 ──
+function rebuildKb() {
+  if (!currentId.value) return
+  api.post('/api/index/rebuild?kbId=' + encodeURIComponent(currentId.value)).then((r) => {
+    if (r.started) {
+      watchBuild = true
+      ElMessage.info('开始构建索引…')
+    } else if (r.runningPhase === 'awaiting_confirm') {
+      ElMessage.warning(`知识库「${r.runningKbName}」正在等待向量化确认，请先处理`)
+    } else {
+      ElMessage.warning(`知识库「${r.runningKbName}」正在构建中，请等待完成`)
+    }
+    pollStatus()
+  })
+}
+
+function cancelBuild() {
+  ElMessageBox.confirm('取消当前构建任务？已处理的文件会保留，下次构建自动续上。', '取消构建', {
+    type: 'warning', confirmButtonText: '取消任务', cancelButtonText: '继续构建',
+  }).then(() => {
+    api.post('/api/index/cancel').then(() => {
+      ElMessage.info('已请求取消')
+      setTimeout(pollStatus, 400)
+    })
+  }).catch(() => {})
+}
+
+function confirmEmbed(vector = true) {
+  const tip = vector ? '已确认，开始向量化' : '已跳过向量化，仅建关键词索引'
+  api.post('/api/index/confirm-embed?vector=' + vector).then(() => {
+    ElMessage.info(tip)
+    setTimeout(pollStatus, 300)
+  })
+}
+
+function goBuildKb() {
+  const k = kbs.value.find((x) => x.id === st.value?.runningKbId)
+  if (k) selectKb(k)
+}
+
+// ── 知识库列表与文件树 ──
+async function reloadKbs() {
+  kbs.value = await api.get('/api/kb/s')
+}
+
+function selectKb(k) {
+  currentId.value = k.id
+  showFailed.value = false
+  tick = 0
+  loadTree(k.id)
+  st.value = null
+  pollStatus()
+  if (activeTab.value === 'docs') loadDocs(0)
+}
+
+async function loadTree(kbId, silent = false) {
+  if (!silent) treeLoading.value = true
+  try {
+    const t = await api.get('/api/kb/' + kbId + '/tree')
+    if (currentId.value === kbId) tree.value = t
+  } finally {
+    treeLoading.value = false
+  }
+}
+
+async function loadDocs(p = 0) {
+  if (!currentId.value) return
+  docsPage.value = p
+  docsLoading.value = true
+  try {
+    const params = new URLSearchParams({ page: p, size: docsSize })
+    if (docsQ.value.trim()) params.set('q', docsQ.value.trim())
+    docs.value = await api.get('/api/kb/' + currentId.value + '/docs?' + params)
+  } finally {
+    docsLoading.value = false
+  }
+}
+
+function onTabChange(t) {
+  if (t === 'docs' && !docs.value.items.length) loadDocs(0)
+}
+
+function createKb() {
+  if (!kbForm.value.name.trim() || !kbForm.value.path.trim()) {
+    ElMessage.warning('请填写名称和本地目录')
+    return
+  }
+  api.post('/api/kb/create', kbForm.value).then((r) => {
+    if (r.ok) {
+      ElMessage.success(`知识库「${r.name}」已创建，开始构建`)
+      kbDialog.value = false
+      kbForm.value = { name: '', path: '' }
+      watchBuild = true
+      reloadKbs().then(() => {
+        currentId.value = r.id
+        loadTree(r.id)
+        pollStatus()
+      })
+    } else {
+      ElMessage.error(r.error || '创建失败')
+    }
+  })
+}
+
+function deleteKb() {
+  const k = currentKb.value
+  if (!k) return
+  ElMessageBox.confirm(`删除知识库「${k.name}」？索引与文档副本将一并删除（源目录不受影响）。`, '删除知识库', {
+    type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+  }).then(() => {
+    api.del('/api/kb/' + k.id).then((r) => {
+      const left = r?.leftoverCount || 0
+      if (left) {
+        const list = (r.leftover || []).slice(0, 5).map((p) => `<div style="font-family:Consolas,monospace;font-size:12px;word-break:break-all">${p}</div>`).join('')
+        ElMessageBox.alert(
+          `知识库已从列表移除，但有 <b>${left}</b> 个文件正被占用、未能删除：${list}`
+          + '<div style="margin-top:8px;color:#8F949E;font-size:12px">关闭 Word / 预览窗口后可手动删除该目录。</div>',
+          '部分文件未能删除', { dangerouslyUseHTMLString: true, confirmButtonText: '知道了' },
+        )
+      } else {
+        ElMessage.success('已删除')
+      }
+      currentId.value = ''
+      reloadKbs().then(() => kbs.value.length && selectKb(kbs.value[0]))
+    })
+  }).catch(() => {})
+}
+
+// ── 文档上传 / 删除（只动知识库副本，不碰源目录）──
+const upDialog = ref(false)
+const upFolder = ref('')
+const upFiles = ref([])
+const upBusy = ref(false)
+const fileInput = ref(null)
+
+// el-select 把空串当成"未选择"，用哨兵值表示根目录
+const ROOT_DIR = '__root__'
+const folderOptions = computed(() => {
+  const out = [{ label: '根目录（知识库最外层）', value: ROOT_DIR }]
+  const walk = (nodes) => {
+    for (const n of nodes || []) {
+      if (n.type !== 'folder') continue
+      out.push({ label: n.path, value: n.path })
+      walk(n.children)
+    }
+  }
+  walk(tree.value.children)
+  return out
+})
+
+function openUpload() {
+  if (!currentId.value) return
+  upFolder.value = ROOT_DIR
+  upFiles.value = []
+  upDialog.value = true
+}
+
+function pickFiles(e) {
+  upFiles.value = [...(e.target.files || [])]
+  e.target.value = '' // 允许再次选择同一个文件
+}
+
+async function doUpload() {
+  if (!upFiles.value.length) { ElMessage.warning('请先选择文件'); return }
+  upBusy.value = true
+  let ok = 0
+  const errs = []
+  for (const f of upFiles.value) {
+    const dir = upFolder.value === ROOT_DIR ? '' : upFolder.value
+    const url = `/api/kb/${currentId.value}/upload?folder=${encodeURIComponent(dir)}`
+      + `&name=${encodeURIComponent(f.name)}`
+    try {
+      const res = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f,
+      })
+      const j = await res.json()
+      if (j.ok) ok++
+      else errs.push(`${f.name}：${j.error}`)
+    } catch (e) {
+      errs.push(`${f.name}：${e}`)
+    }
+  }
+  upBusy.value = false
+  upDialog.value = false
+  await loadTree(currentId.value)
+  if (errs.length) {
+    ElMessageBox.alert(errs.slice(0, 8).join('<br>'), `上传 ${ok} 个成功，${errs.length} 个失败`, {
+      dangerouslyUseHTMLString: true, confirmButtonText: '知道了',
+    })
+  } else {
+    ElMessage.success(`已上传 ${ok} 个文件，点「构建索引」后进入检索`)
+  }
+}
+
+function removeFile(n) {
+  ElMessageBox.confirm(
+    `从知识库删除「${n.name}」？只删知识库副本，源目录不受影响；索引将在下次构建时移除该文档。`,
+    '删除文件', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+  ).then(() => {
+    api.del(`/api/kb/${currentId.value}/file?path=${encodeURIComponent(n.path)}`).then((r) => {
+      if (r.ok) {
+        ElMessage.success('已删除')
+        loadTree(currentId.value, true)
+      } else {
+        ElMessage.error(r.error || '删除失败')
+      }
+    })
+  }).catch(() => {})
+}
+
+// ── 目录选择器 ──
+function openFs() {
+  fsDialog.value = true
+  fsGo('')
+}
+
+async function fsGo(path) {
+  fsCurrent.value = path
+  try {
+    const d = await api.get('/api/fs/list?path=' + encodeURIComponent(path))
+    fsDirs.value = d.dirs || []
+  } catch (e) { /* ignore */ }
+}
+
+function fsPick() {
+  kbForm.value.path = fsCurrent.value
+  fsDialog.value = false
+}
+
+// ── 文件树扁平化 ──
+const collapsed = ref({})
+const flatTree = computed(() => {
+  const rows = []
+  function walk(nodes, depth) {
+    for (const n of nodes) {
+      rows.push({ ...n, depth })
+      if (n.type === 'folder' && n.children && !collapsed.value[n.path]) walk(n.children, depth + 1)
+    }
+  }
+  walk(tree.value.children || [], 0)
+  return rows
+})
+
+function toggleNode(n) {
+  if (n.type !== 'folder') return
+  collapsed.value = { ...collapsed.value, [n.path]: !collapsed.value[n.path] }
+}
+
+function openFile(n) {
+  if (n.type !== 'file') return
+  preview.value = { open: true, docPath: n.path, seq: null }
+}
+
+function openDoc(it) {
+  preview.value = { open: true, docPath: it.docPath, seq: it.hitSeq ?? null }
+}
+
+function nodeBuilding(n) {
+  return building.value && live.value?.currentFile === n.path
+}
+
+const STATUS_META = {
+  ok: { text: '✓', cls: 'ok', tip: '' },
+  empty: { text: '空文档', cls: 'empty', tip: '文件可解析但没有提取到文本，未进入检索' },
+  skipped: { text: '未索引', cls: 'skip', tip: '类型不在索引白名单内，或文件为空' },
+  pending: { text: '待构建', cls: 'pending', tip: '可索引但尚未进入索引，点「构建索引」处理' },
+  stale: { text: '待更新', cls: 'stale', tip: '源文件已变更，下次构建会更新该文档' },
+  fail: { text: '⚠ 失败', cls: 'fail', tip: '构建失败，悬停查看原因' },
+}
+function stMeta(n) {
+  return STATUS_META[n.status] || STATUS_META.ok
+}
+
+// 本库失败文件清单
+const showFailed = ref(false)
+const failedList = computed(() => st.value?.last?.failed || [])
+</script>
+
+<template>
+  <el-container class="kbpage">
+    <el-aside width="250px" class="kbside">
+      <el-button type="primary" style="width:100%" @click="kbDialog = true">＋ 新建知识库</el-button>
+      <div class="kbside-list">
+        <div v-for="k in kbs" :key="k.id" class="kitem" :class="{ on: k.id === currentId }" @click="selectKb(k)">
+          <div class="knm">
+            {{ k.name }}
+            <span v-if="st && st.runningKbId === k.id" class="kdot" />
+          </div>
+          <div class="kst"><span>{{ k.path }}</span></div>
+        </div>
+        <el-empty v-if="!kbs.length" description="还没有知识库" :image-size="60" />
+      </div>
+    </el-aside>
+
+    <el-main class="kbmain">
+      <div class="kbhead">
+        <el-text tag="b" size="large">{{ tree.name || currentKb?.name || '知识库' }}</el-text>
+        <el-button size="small" type="primary" plain :disabled="!currentId" @click="openUpload">
+          <el-icon style="margin-right:4px"><Upload /></el-icon>上传文档
+        </el-button>
+        <el-tooltip content="增量构建：只处理新增与变更的文件，向量按内容 hash 复用，不重复调用接口" placement="bottom">
+          <el-button size="small" :disabled="!currentId || runningForThis" @click="rebuildKb">构建索引</el-button>
+        </el-tooltip>
+        <el-button size="small" type="danger" plain :disabled="!currentId" @click="deleteKb">删除</el-button>
+        <span class="hstat" v-if="stats">
+          <span class="hs"><b>{{ stats.files }}</b> 文件</span>
+          <span class="hs"><b>{{ stats.indexable }}</b> 可索引</span>
+          <span class="hs ok"><b>{{ stats.indexed }}</b> 已索引</span>
+          <span class="hs"><b>{{ fmtNum(stats.chunks) }}</b> 分块</span>
+          <el-tooltip v-if="stats.skipped" :content="`${stats.skipped} 个文件类型不在索引白名单内（如 zip/png），不会进入检索`" placement="bottom">
+            <span class="hs mute"><b>{{ stats.skipped }}</b> 未索引</span>
+          </el-tooltip>
+          <span v-if="stats.pending" class="hs pending"><b>{{ stats.pending }}</b> 待构建</span>
+          <span v-if="stats.stale" class="hs stale"><b>{{ stats.stale }}</b> 待更新</span>
+          <span v-if="stats.empty" class="hs mute"><b>{{ stats.empty }}</b> 空文档</span>
+          <span v-if="stats.failed" class="hs danger"><b>{{ stats.failed }}</b> 失败</span>
+        </span>
+      </div>
+
+      <!-- 本库构建进度（分阶段） -->
+      <div v-if="building" class="buildbar">
+        <div class="brow">
+          <el-tag size="small" type="warning" effect="plain">{{ phaseLabel }}</el-tag>
+          <template v-if="live.phase === 'scanning'">
+            <el-progress :percentage="100" :stroke-width="6" :show-text="false" striped striped-flow style="flex:1" />
+            <span class="btxt">正在扫描文件…</span>
+          </template>
+          <template v-else>
+            <el-progress :percentage="filePct" :stroke-width="6" :show-text="false" style="flex:1" />
+            <span class="btxt">{{ live.filesDone }}/{{ live.filesTotal }} 文件 · 已用 {{ fmtDur(live.elapsedMs) }}</span>
+          </template>
+          <el-button size="small" text type="danger" @click="cancelBuild">取消</el-button>
+        </div>
+        <div v-if="live.phase === 'embedding'" class="brow sub">
+          <span class="btxt">向量化</span>
+          <el-progress :percentage="embedPct" :stroke-width="6" status="success"
+                       :format="() => `${live.embedded}/${live.needEmbed}`" style="flex:1" />
+        </div>
+        <div class="brow sub" v-if="live.currentFile">
+          <span class="bpath">当前：{{ live.currentFile }}</span>
+          <span v-if="live.errors" class="bdanger">失败 {{ live.errors }}</span>
+        </div>
+      </div>
+
+      <!-- 向量化成本确认 -->
+      <el-alert v-else-if="awaiting" type="warning" :closable="false" class="awaitbox"
+                :title="`本次需要向量化 ${live.awaitingCount} 个新分块（约 ${fmtNum(live.awaitingChars)} 字 · ${live.awaitingModel}）`">
+        <div class="awaitbody">
+          <span class="awaittip">
+            待向量化块数超过成本护栏阈值，因此先暂停确认。确认后调用 embedding 接口；也可以本次跳过向量化，先把文本检索建好（下次构建会自动补齐向量）。
+            10 分钟内未操作将自动放弃本次构建。
+          </span>
+          <div class="awaitbtns">
+            <el-button size="small" type="primary" @click="confirmEmbed(true)">确认执行</el-button>
+            <el-button size="small" @click="confirmEmbed(false)">跳过向量化</el-button>
+            <el-button size="small" type="danger" plain @click="cancelBuild">取消任务</el-button>
+          </div>
+        </div>
+      </el-alert>
+
+      <!-- 其他库在构建 -->
+      <el-alert v-else-if="otherRunning" type="info" :closable="false" class="awaitbox"
+                :title="`知识库「${st.runningKbName}」${st.runningPhase === 'awaiting_confirm' ? '正在等待向量化确认' : '正在构建中'}（同一时间只跑一个构建任务）`">
+        <div class="awaitbtns">
+          <el-button size="small" @click="goBuildKb">前往查看</el-button>
+          <el-button size="small" type="danger" plain @click="cancelBuild">取消该任务</el-button>
+        </div>
+      </el-alert>
+
+      <!-- 上次构建结果（按库） -->
+      <div v-if="st && !runningForThis && st.last" class="idxinfo">
+        <el-text size="small" type="info">
+          最近构建 {{ fmtTime(st.last.builtAt) }} · 耗时 {{ fmtDur(st.last.durationMs) }}
+          · 新增 {{ st.last.added }} · 更新 {{ st.last.updated }} · 跳过 {{ st.last.skipped }}
+          · 删除 {{ st.last.removed }} · 向量化 {{ st.last.embedded }} 块
+        </el-text>
+        <el-text v-if="st.last.vectorFailed" size="small" type="warning">向量失败 {{ st.last.vectorFailed }} 块</el-text>
+        <el-button v-if="failedList.length" link type="danger" size="small" @click="showFailed = !showFailed">
+          失败文件 {{ failedList.length }} ▾
+        </el-button>
+      </div>
+      <div v-else-if="st && !runningForThis && !st.last" class="idxinfo">
+        <el-text size="small" type="info">该知识库尚未构建索引</el-text>
+      </div>
+      <div v-if="showFailed && failedList.length" class="faillist">
+        <div v-for="f in failedList" :key="f.path" class="failrow">
+          <span class="fp">{{ f.path }}</span>
+          <span class="fr">{{ f.reason }}</span>
+        </div>
+        <div class="failhint">失败文件会在下次构建时自动重试</div>
+      </div>
+
+      <div v-if="stats && (stats.pending > 0)" class="buildhint">
+        <el-text size="small" type="warning">
+          有 {{ stats.pending }} 个文件尚未进入索引
+        </el-text>
+        <el-button size="small" link type="primary" @click="rebuildKb">立即构建</el-button>
+      </div>
+
+      <el-tabs v-model="activeTab" @tab-change="onTabChange">
+        <el-tab-pane label="文件树" name="tree">
+          <div v-loading="treeLoading" class="treebox">
+            <div class="tree">
+              <div v-for="n in flatTree" :key="n.path" class="tnode" :class="{ folder: n.type === 'folder' }"
+                   :style="{ paddingLeft: 8 + n.depth * 22 + 'px' }" @click="n.type === 'folder' ? toggleNode(n) : openFile(n)">
+                <span class="caret">{{ n.type === 'folder' ? (collapsed[n.path] ? '▸' : '▾') : '' }}</span>
+                <el-icon class="tic"><component :is="n.type === 'folder' ? Folder : Document" /></el-icon>
+                <span class="nm">{{ n.name }}</span>
+                <span class="st-slot">
+                  <el-icon v-if="nodeBuilding(n)" class="st-spin" :size="13"><Loading /></el-icon>
+                  <el-tooltip v-else-if="n.type === 'file' && stMeta(n).tip" :content="n.failReason || stMeta(n).tip" placement="top">
+                    <span class="st" :class="stMeta(n).cls">{{ stMeta(n).text }}</span>
+                  </el-tooltip>
+                  <span v-else-if="n.type === 'file'" class="st ok">✓</span>
+                  <span v-else-if="n.status && n.status !== 'ok'" class="st" :class="stMeta(n).cls">{{ stMeta(n).text }}</span>
+                </span>
+                <span class="cnt">
+                  <template v-if="n.type === 'folder'">{{ n.fileCount || 0 }} 文件<template v-if="n.chunkSum"> · {{ n.chunkSum }} 块</template></template>
+                  <template v-else-if="n.chunkCount">{{ n.chunkCount }} 分块</template>
+                </span>
+                <span class="rowops" v-if="n.type === 'file'">
+                  <el-tooltip content="从知识库删除该文件" placement="top">
+                    <el-icon class="del" @click.stop="removeFile(n)"><Delete /></el-icon>
+                  </el-tooltip>
+                </span>
+              </div>
+              <el-empty v-if="!flatTree.length && !treeLoading" description="该知识库暂无文件" :image-size="60" />
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="文档检索" name="docs">
+          <div class="docbar">
+            <el-input v-model="docsQ" placeholder="搜索该知识库的文档（混合检索）…" clearable style="width:380px"
+                      @keydown.enter="loadDocs(0)" @clear="docsQ = ''; loadDocs(0)">
+              <template #append><el-button @click="loadDocs(0)">搜索</el-button></template>
+            </el-input>
+            <el-text size="small" type="info" style="margin-left:auto">共 {{ docs.total }} 条{{ docsQ ? '（检索结果）' : '' }}</el-text>
+          </div>
+          <el-table :data="docs.items" v-loading="docsLoading" size="small" @row-click="openDoc" row-class-name="clickable"
+                    style="width:100%">
+            <el-table-column label="类型" width="80">
+              <template #default="{ row }"><el-tag size="small" effect="plain">{{ (row.ext || '?').slice(1).toUpperCase() }}</el-tag></template>
+            </el-table-column>
+            <el-table-column prop="docTitle" label="标题" min-width="240" show-overflow-tooltip />
+            <el-table-column prop="docPath" label="路径" min-width="240" show-overflow-tooltip />
+            <el-table-column prop="chunkCount" label="分块" width="70">
+              <template #default="{ row }">{{ row.chunkCount ?? '-' }}</template>
+            </el-table-column>
+            <el-table-column label="摘要" min-width="280" show-overflow-tooltip>
+              <template #default="{ row }"><span v-html="row.snippet"></span></template>
+            </el-table-column>
+            <template #empty>
+              <el-empty description="没有匹配的文档" :image-size="60" />
+            </template>
+          </el-table>
+          <div class="pager" v-if="docs.total > docsSize && !docsQ">
+            <el-pagination background layout="prev, pager, next" :total="docs.total"
+                           :page-size="docsSize" :current-page="docsPage + 1"
+                           @current-change="(p) => loadDocs(p - 1)" />
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </el-main>
+
+    <!-- 上传文档对话框 -->
+    <el-dialog v-model="upDialog" title="上传文档到知识库" width="540px">
+      <el-form label-width="80px">
+        <el-form-item label="目标目录">
+          <el-select v-model="upFolder" style="width:100%">
+            <el-option v-for="o in folderOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="文件">
+          <div style="width:100%">
+            <input ref="fileInput" type="file" multiple hidden @change="pickFiles" />
+            <el-button size="small" @click="fileInput.click()">选择文件…</el-button>
+            <div class="formhint">支持 docx / pdf / xlsx / pptx / md / txt / sql / html 等可解析类型，单个不超过 200MB</div>
+            <div class="upfiles" v-if="upFiles.length">
+              <div v-for="f in upFiles" :key="f.name" class="upfile">
+                <span class="upn">{{ f.name }}</span>
+                <span class="ups">{{ Math.max(1, Math.round(f.size / 1024)) }} KB</span>
+              </div>
+            </div>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="upDialog = false">取消</el-button>
+        <el-button type="primary" :loading="upBusy" :disabled="!upFiles.length" @click="doUpload">
+          上传{{ upFiles.length ? ` ${upFiles.length} 个` : '' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 新建知识库对话框 -->
+    <el-dialog v-model="kbDialog" title="新建知识库" width="500px">
+      <el-form label-width="90px">
+        <el-form-item label="名称">
+          <el-input v-model="kbForm.name" placeholder="例如：运维知识库" />
+        </el-form-item>
+        <el-form-item label="本地目录">
+          <div style="display:flex;gap:8px;width:100%">
+            <el-input v-model="kbForm.path" placeholder="例如 E:\docs\运维资料" />
+            <el-button @click="openFs">浏览…</el-button>
+          </div>
+          <div class="formhint">创建后会把该目录下的文档复制到工作路径并构建独立索引，源目录不受影响</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="kbDialog = false">取消</el-button>
+        <el-button type="primary" @click="createKb">创建并构建</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 目录选择器 -->
+    <el-dialog v-model="fsDialog" title="选择目录" width="520px">
+      <div class="fsbar">
+        <el-text size="small" type="info">当前位置：</el-text>
+        <el-text size="small" class="fspath">{{ fsCurrent || '（盘符列表）' }}</el-text>
+        <el-button size="small" style="margin-left:auto" @click="fsGo('')">⬅ 返回盘符列表</el-button>
+      </div>
+      <div class="fslist">
+        <div v-for="d in fsDirs" :key="d.path" class="fsnode" @click="fsGo(d.path)">
+          <el-icon><Folder /></el-icon>{{ d.name }}
+        </div>
+        <el-empty v-if="!fsDirs.length" description="该目录下没有子目录" :image-size="60" />
+      </div>
+      <template #footer>
+        <el-button @click="fsDialog = false">取消</el-button>
+        <el-button type="primary" @click="fsPick">选择当前目录</el-button>
+      </template>
+    </el-dialog>
+
+    <PreviewDrawer :target="preview" :kb-id="currentId || 'default'" @close="preview.open = false" />
+  </el-container>
+</template>
+
+<style scoped>
+.kbpage{height:100%;background:var(--el-bg-color-page)}
+.kbside{background:#FBFBFC;border-right:1px solid var(--el-border-color-light);padding:12px 8px;overflow:auto}
+.kbside-list{margin-top:8px}
+.kitem{padding:9px 10px;border-radius:8px;cursor:pointer;margin-bottom:2px;border:1px solid transparent}
+.kitem:hover{background:var(--el-fill-color-light)}
+.kitem.on{background:var(--el-color-primary-light-9);border-color:#C7C8FA}
+.kitem .knm{font-size:var(--fs-base);font-weight:600;color:var(--el-text-color-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px}
+.kdot{width:6px;height:6px;border-radius:50%;background:var(--el-color-warning);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.kitem .kst{font-size:var(--fs-xs);color:var(--el-text-color-secondary);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kbmain{display:flex;flex-direction:column;overflow:hidden;padding:0 var(--page-x) 20px}
+/* 固定高度的头部区块不能被长文件树压缩（否则提示条会被挤成 0 高度） */
+.kbhead,.buildbar,.awaitbox,.idxinfo,.faillist{flex:0 0 auto}
+.kbmain :deep(.el-tabs){flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.kbmain :deep(.el-tabs__header){flex:0 0 auto;margin-bottom:8px}
+.kbmain :deep(.el-tabs__content){flex:1 1 auto;min-height:0;overflow:auto}
+.kbhead{display:flex;align-items:center;gap:10px;padding:var(--page-y) 0 10px;flex-wrap:wrap}
+.kbhead :deep(.el-text){font-size:var(--fs-xl);font-weight:600;letter-spacing:0;line-height:1.35}
+.hstat{display:flex;align-items:center;gap:2px;margin-left:auto;flex-wrap:wrap}
+.hs{font-size:var(--fs-xs);color:var(--el-text-color-secondary);padding:3px 8px;border-radius:6px;background:var(--el-fill-color-light);font-variant-numeric:tabular-nums}
+.hs b{color:var(--el-text-color-primary);font-weight:600;letter-spacing:0}
+.hs.ok b{color:var(--el-color-success)}
+.hs.mute b{color:var(--el-text-color-secondary)}
+.hs.pending b{color:var(--el-color-primary)}
+.hs.stale b{color:var(--el-color-warning)}
+.hs.danger b{color:var(--el-color-danger)}
+.treebox{flex:1}
+.tree{background:#fff;border:1px solid var(--el-border-color-light);border-radius:10px;padding:8px 12px;
+  font-size:var(--fs-base);line-height:var(--lh-tight)}
+.tnode{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer}
+.tnode:hover{background:var(--el-fill-color-light)}
+.tnode.folder{font-weight:600}
+.tnode .caret{font-size:9px;color:var(--el-text-color-secondary);width:10px}
+.tnode .tic{color:var(--el-text-color-secondary)}
+.tnode .nm{color:var(--el-text-color-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tnode .st-slot{width:64px;flex:0 0 64px;margin-left:auto;display:flex;justify-content:flex-end;align-items:center}
+.tnode .st{font-size:var(--fs-2xs);white-space:nowrap;padding:1px 6px;border-radius:5px;line-height:1.5}
+.tnode .st.ok{font-size:var(--fs-2xs);padding:0}
+.tnode .st.empty,.tnode .st.skip{color:var(--el-text-color-secondary);background:var(--el-fill-color)}
+.tnode .st.pending{color:var(--el-color-primary);background:var(--el-color-primary-light-9)}
+.tnode .st.stale{color:var(--el-color-warning);background:var(--el-color-warning-light-9)}
+.tnode .st.fail{color:var(--el-color-danger);background:var(--el-color-danger-light-9)}
+.tnode .st-spin{color:var(--el-color-primary);animation:spin 1s linear infinite}
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+.tnode .cnt{width:132px;flex:0 0 132px;text-align:right;white-space:nowrap;
+  font-size:var(--fs-2xs);color:var(--el-text-color-secondary);font-variant-numeric:tabular-nums}
+.buildbar{display:flex;flex-direction:column;gap:5px;padding:8px 10px;margin-bottom:8px;background:#fff;border:1px solid var(--el-border-color-light);border-radius:8px}
+.brow{display:flex;align-items:center;gap:10px}
+.brow.sub{gap:8px}
+.btxt{font-size:var(--fs-xs);color:var(--el-text-color-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
+.bpath{font-size:var(--fs-2xs);color:var(--el-text-color-secondary);font-family:Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bdanger{font-size:var(--fs-2xs);color:var(--el-color-danger);margin-left:auto}
+.awaitbox{margin-bottom:10px}
+.hs, .buildbar, .idxinfo{font-variant-numeric:tabular-nums}
+.awaitbody{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.awaittip{font-size:var(--fs-xs);color:var(--el-text-color-secondary);line-height:1.7}
+.awaitbtns{display:flex;gap:8px}
+.docbar{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.pager{display:flex;justify-content:center;padding:8px 0}
+.idxinfo{display:flex;align-items:center;gap:10px;padding:0 0 8px;flex-wrap:wrap}
+.faillist{border:1px solid #F3D6D6;background:#FDF7F7;border-radius:8px;padding:8px 12px;margin-bottom:10px;max-height:200px;overflow:auto}
+.failrow{display:flex;gap:10px;font-size:var(--fs-xs);padding:3px 0}
+.failrow .fp{font-family:Consolas,monospace;flex:0 1 auto;color:var(--el-text-color-primary);white-space:nowrap}
+.failrow .fr{color:var(--el-text-color-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.failhint{font-size:var(--fs-2xs);color:var(--el-text-color-secondary);margin-top:4px}
+.formhint{font-size:var(--fs-2xs);color:var(--el-text-color-secondary);margin-top:4px;line-height:1.6}
+.fsbar{display:flex;gap:6px;align-items:center;margin-bottom:8px}
+.fspath{font-family:Consolas,monospace}
+.fslist{border:1px solid var(--el-border-color-light);border-radius:8px;max-height:260px;overflow:auto}
+.fsnode{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;font-size:13px}
+.fsnode:hover{background:var(--el-fill-color-light)}
+:deep(.clickable){cursor:pointer}
+.rowops{width:24px;flex:0 0 24px;display:flex;justify-content:center;opacity:0;transition:opacity var(--t-fast) var(--ease)}
+.tnode:hover .rowops{opacity:1}
+.rowops .del{font-size:13px;color:var(--el-text-color-secondary);cursor:pointer}
+.rowops .del:hover{color:var(--el-color-danger)}
+.buildhint{display:flex;align-items:center;gap:8px;padding:0 0 8px}
+.upfiles{margin-top:8px;border:1px solid var(--el-border-color-light);border-radius:8px;max-height:180px;overflow:auto}
+.upfile{display:flex;gap:10px;align-items:center;padding:6px 10px;font-size:var(--fs-xs);border-bottom:1px dashed var(--el-border-color-lighter)}
+.upfile:last-child{border-bottom:0}
+.upfile .upn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--el-text-color-primary)}
+.upfile .ups{color:var(--el-text-color-secondary);font-variant-numeric:tabular-nums}
+</style>
