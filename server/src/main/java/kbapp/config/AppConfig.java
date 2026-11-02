@@ -233,6 +233,7 @@ public class AppConfig {
         c.rag = rag; c.index = index; c.guard = guard; c.mcp = mcp;
         c.rerank = rerank.copy();
         c.api = api;
+        c.sync = sync;   // 必须带上：否则设置页保存任何配置都会把坚果云设置抹成默认值
         return c;
     }
 
