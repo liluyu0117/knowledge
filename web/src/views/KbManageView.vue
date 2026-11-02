@@ -193,6 +193,8 @@ async function loadTree(kbId, silent = false) {
   } finally {
     treeLoading.value = false
   }
+  // 首次加载/切换库：重置为只展示第一层（全部折叠）；构建后刷新保留已展开目录
+  if (!silent) expanded.value = {}
   loadDocMeta(kbId)
 }
 
@@ -290,18 +292,23 @@ function onTabChange(t) {
   if (t === 'docs' && !docs.value.items.length) loadDocs(0)
 }
 
-function createKb() {
+const kbBusy = ref(false)
+
+async function createKb() {
   if (!kbForm.value.name.trim() || !kbForm.value.path.trim()) {
     ElMessage.warning('请填写名称和本地目录')
     return
   }
-  api.post('/api/kb/create', kbForm.value).then((r) => {
+  if (kbBusy.value) return   // 防重复提交：创建进行中时忽略后续点击
+  kbBusy.value = true
+  try {
+    const r = await api.post('/api/kb/create', kbForm.value)
     if (r.ok) {
-      ElMessage.success(`知识库「${r.name}」已创建，开始构建`)
+      ElMessage.success(r.existed ? `知识库「${r.name}」已存在，直接打开` : `知识库「${r.name}」已创建，开始构建`)
       kbDialog.value = false
       kbForm.value = { name: '', path: '' }
       watchBuild = true
-      reloadKbs().then(() => {
+      await reloadKbs().then(() => {
         currentId.value = r.id
         loadTree(r.id)
         pollStatus()
@@ -309,7 +316,11 @@ function createKb() {
     } else {
       ElMessage.error(r.error || '创建失败')
     }
-  })
+  } catch (e) {
+    ElMessage.error('创建失败：' + e)
+  } finally {
+    kbBusy.value = false
+  }
 }
 
 function deleteKb() {
@@ -440,8 +451,8 @@ function fsPick() {
   fsDialog.value = false
 }
 
-// ── 文件树扁平化 ──
-const collapsed = ref({})
+// ── 文件树扁平化（懒展开：默认只渲染第一层，点开的文件夹才渲染子层）──
+const expanded = ref({})     // path -> 是否展开；默认全部折叠
 const flatTree = computed(() => {
   const rows = []
   const filtering = tagFilter.value.length > 0
@@ -450,7 +461,8 @@ const flatTree = computed(() => {
       if (n.type === 'folder') {
         const start = rows.length
         rows.push({ ...n, depth })
-        if (!collapsed.value[n.path]) walk(n.children, depth + 1)
+        // 标签筛选时无视折叠全量下钻（否则折叠的文件夹里命中的文件看不见）
+        if (filtering || expanded.value[n.path]) walk(n.children, depth + 1)
         // 标签筛选时，没有任何命中后代的空文件夹直接隐藏
         if (filtering && rows.length === start + 1) rows.length = start
       } else {
@@ -465,7 +477,7 @@ const flatTree = computed(() => {
 
 function toggleNode(n) {
   if (n.type !== 'folder') return
-  collapsed.value = { ...collapsed.value, [n.path]: !collapsed.value[n.path] }
+  expanded.value = { ...expanded.value, [n.path]: !expanded.value[n.path] }
 }
 
 function openFile(n) {
@@ -632,7 +644,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
             <div class="tree">
               <div v-for="n in flatTree" :key="n.path" class="tnode" :class="{ folder: n.type === 'folder' }"
                    :style="{ paddingLeft: 8 + n.depth * 22 + 'px' }" @click="n.type === 'folder' ? toggleNode(n) : openFile(n)">
-                <span class="caret">{{ n.type === 'folder' ? (collapsed[n.path] ? '▸' : '▾') : '' }}</span>
+                <span class="caret">{{ n.type === 'folder' ? (expanded[n.path] ? '▾' : '▸') : '' }}</span>
                 <el-icon class="tic"><component :is="n.type === 'folder' ? Folder : Document" /></el-icon>
                 <span class="nm">{{ n.name }}</span>
                 <span class="st-slot">
@@ -802,7 +814,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
       </el-form>
       <template #footer>
         <el-button @click="kbDialog = false">取消</el-button>
-        <el-button type="primary" @click="createKb">创建并构建</el-button>
+        <el-button type="primary" :loading="kbBusy" :disabled="kbBusy" @click="createKb">创建并构建</el-button>
       </template>
     </el-dialog>
 

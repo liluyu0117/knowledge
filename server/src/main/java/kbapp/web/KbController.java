@@ -73,9 +73,28 @@ public class KbController {
             m.put("error", "名称和路径不能为空");
             return m;
         }
+        String name = body.name().trim();
+        String path = body.path().trim();
+        // 幂等防重：前端重复点击/双击提交时不重复建库
+        for (KbRegistry.KbEntry k : registry.list()) {
+            boolean sameName = k.name().equals(name);
+            boolean samePath = k.sourcePath() != null && k.sourcePath().equals(path);
+            if (sameName && samePath) {
+                m.put("ok", true);
+                m.put("id", k.id());
+                m.put("name", k.name());
+                m.put("existed", true);
+                return m;
+            }
+            if (sameName) {
+                m.put("ok", false);
+                m.put("error", "已存在同名知识库「" + k.name() + "」（源目录：" + k.sourcePath() + "），请换个名称");
+                return m;
+            }
+        }
         try {
-            KbRegistry.KbEntry e = registry.create(body.name().trim(), body.path().trim());
-            registry.copySource(body.path().trim(), e.id());
+            KbRegistry.KbEntry e = registry.create(name, path);
+            registry.copySource(path, e.id());
             builder.start(e.id());
             m.put("ok", true);
             m.put("id", e.id());
