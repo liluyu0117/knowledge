@@ -93,6 +93,12 @@ public class AppConfig {
         private int autoMinutes = 0;
         private int chunkOverlapChars = 50;
         private int minChunkChars = 20;
+        /** 分块模式：fixed = 滑动窗口（默认）；parent-child = 子块检索 + 父块上下文。切换后下次构建自动全量重建。 */
+        private String chunkMode = "fixed";
+        /** parent-child 模式：子块目标字符数（检索粒度）。 */
+        private int childChars = 380;
+        /** parent-child 模式：父块上限字符数（回读上下文的完整度）。 */
+        private int parentChars = 2000;
 
         public int getChunkChars() { return chunkChars; }
         public void setChunkChars(int chunkChars) { this.chunkChars = chunkChars; }
@@ -102,6 +108,12 @@ public class AppConfig {
         public void setMinChunkChars(int minChunkChars) { this.minChunkChars = minChunkChars; }
         public int getAutoMinutes() { return autoMinutes; }
         public void setAutoMinutes(int autoMinutes) { this.autoMinutes = autoMinutes; }
+        public String getChunkMode() { return chunkMode == null || chunkMode.isBlank() ? "fixed" : chunkMode; }
+        public void setChunkMode(String chunkMode) { this.chunkMode = chunkMode; }
+        public int getChildChars() { return childChars; }
+        public void setChildChars(int childChars) { this.childChars = childChars; }
+        public int getParentChars() { return parentChars; }
+        public void setParentChars(int parentChars) { this.parentChars = parentChars; }
     }
 
     public static class Guard {

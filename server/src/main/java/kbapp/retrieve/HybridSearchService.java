@@ -174,6 +174,8 @@ public class HybridSearchService {
 
                 List<Cand> pool = new ArrayList<>();
                 Map<String, Integer> perDoc = new HashMap<>();
+                // 父块全文缓存：同文档多块命中只查一次索引
+                Map<String, Map<Integer, String>> parentCache = new HashMap<>();
                 for (Map.Entry<String, Double> e : ranked) {
                     if (pool.size() >= fetch) break;
                     int docId = Integer.parseInt(e.getKey());
@@ -188,18 +190,26 @@ public class HybridSearchService {
                     if (chunkFlags.isDisabled(kb.id(), path, seqNo)) continue;
                     if (perDoc.merge(path, 1, Integer::sum) > mpd) continue;
                     String body = IndexSchema.getString(d, IndexSchema.BODY);
+                    // 父子分块：命中子块 → 按父区间把小节全文拼回来，喂给重排与 LLM 上下文
+                    String contextText = null;
+                    int ps = IndexSchema.getInt(d, IndexSchema.PARENT_START);
+                    int pe = IndexSchema.getInt(d, IndexSchema.PARENT_END);
+                    if (pe > ps) {
+                        contextText = parentText(searcher, path, ps, pe, parentCache);
+                    }
                     SearchHit hit = new SearchHit(path,
                             IndexSchema.getString(d, IndexSchema.DOC_TITLE),
                             IndexSchema.getString(d, IndexSchema.EXT),
                             IndexSchema.getString(d, IndexSchema.KIND),
                             IndexSchema.getString(d, IndexSchema.FOLDER),
-                            IndexSchema.getInt(d, IndexSchema.SEQ),
+                            seqNo,
                             IndexSchema.getString(d, IndexSchema.HEADING),
                             highlight(body, highlighter, analyzer),
                             e.getValue(),
                             kwSet.containsKey(e.getKey()),
                             vecSet.containsKey(e.getKey()),
-                            null);
+                            null,
+                            contextText);
                     pool.add(new Cand(hit, body));
                 }
 
@@ -246,7 +256,11 @@ public class HybridSearchService {
         }
     }
 
-    /** 重排输入：标题 + 小节 + 正文（截断到 1200 字，兼顾 token 与信息量）。 */
+    /**
+     * 重排输入：恒用命中子块（标题 + 小节 + 子块正文，截 1200 字）。
+     * 不用父块全文 —— 长文本会稀释相关度信号，把正确文档的分压到阈值以下。
+     * 父块全文只用于喂 LLM 的上下文（SearchHit.contextText），即「小块重排、大块生成」。
+     */
     private String rerankText(Cand c) {
         SearchHit h = c.hit();
         StringBuilder sb = new StringBuilder();
@@ -260,7 +274,38 @@ public class HybridSearchService {
     /** 复制一条命中并挂上重排分数。 */
     private SearchHit withScore(SearchHit h, double score) {
         return new SearchHit(h.docPath(), h.docTitle(), h.ext(), h.kind(), h.folder(),
-                h.seq(), h.heading(), h.snippetHtml(), h.rrfScore(), h.kwHit(), h.vecHit(), score);
+                h.seq(), h.heading(), h.snippetHtml(), h.rrfScore(), h.kwHit(), h.vecHit(),
+                score, h.contextText());
+    }
+
+    /**
+     * 父块全文：把 [ps..pe] 区间内的子块按 seq 拼回完整小节。
+     * 同文档的块做一次索引查询并缓存，重排候选里同文档多块命中不会重复扫。
+     */
+    private String parentText(IndexSearcher searcher, String path, int ps, int pe,
+                              Map<String, Map<Integer, String>> cache) {
+        Map<Integer, String> bySeq = cache.computeIfAbsent(path, p -> {
+            Map<Integer, String> m = new java.util.TreeMap<>();
+            try {
+                for (var sd : searcher.search(new TermQuery(new Term(IndexSchema.DOC_PATH, p)), 5000).scoreDocs) {
+                    var doc = searcher.storedFields().document(sd.doc,
+                            java.util.Set.of(IndexSchema.SEQ, IndexSchema.BODY));
+                    m.put(IndexSchema.getInt(doc, IndexSchema.SEQ), IndexSchema.getString(doc, IndexSchema.BODY));
+                }
+            } catch (Exception e) {
+                log.debug("读父块失败: {}", e.toString());
+            }
+            return m;
+        });
+        StringBuilder sb = new StringBuilder();
+        for (int i = Math.max(0, ps); i <= pe; i++) {
+            String t = bySeq.get(i);
+            if (t == null || t.isBlank()) continue;
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(t);
+        }
+        String s = sb.toString();
+        return s.length() > 4000 ? s.substring(0, 4000) : s;
     }
 
     private void accumulate(List<ScoreDoc> hits, int rrfK, Map<String, Double> rrf,

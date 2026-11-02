@@ -49,7 +49,10 @@ public final class RagContextBuilder {
                 sb.append(" · ").append(h.heading());
             }
             sb.append("（块 ").append(h.seq()).append("）\n");
-            sb.append(stripMarks(h.snippetHtml())).append("\n\n");
+            // 父子分块模式：contextText 是父块（小节）全文，比 180 字摘要完整得多
+            String body = h.contextText() != null && !h.contextText().isBlank()
+                    ? h.contextText() : stripMarks(h.snippetHtml());
+            sb.append(body).append("\n\n");
             n++;
         }
         return sb.toString().strip();

@@ -330,9 +330,10 @@ public class KbController {
     }
 
     @PostMapping("/{id}/rebuild")
-    public Map<String, Object> rebuild(@PathVariable String id) {
+    public Map<String, Object> rebuild(@PathVariable String id,
+                                       @RequestParam(defaultValue = "false") boolean forceFull) {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("started", builder.start(id));
+        m.put("started", builder.start(id, forceFull));
         return m;
     }
 

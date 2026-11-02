@@ -137,6 +137,9 @@ public class SettingsController {
             if (idx.get("autoMinutes") instanceof Number n) next.getIndex().setAutoMinutes(n.intValue());
             if (idx.get("chunkChars") instanceof Number n) next.getIndex().setChunkChars(n.intValue());
             if (idx.get("chunkOverlapChars") instanceof Number n) next.getIndex().setChunkOverlapChars(n.intValue());
+            if (idx.get("chunkMode") != null) next.getIndex().setChunkMode(String.valueOf(idx.get("chunkMode")));
+            if (idx.get("childChars") instanceof Number n) next.getIndex().setChildChars(n.intValue());
+            if (idx.get("parentChars") instanceof Number n) next.getIndex().setParentChars(n.intValue());
         }
         if (body.get("api") instanceof Map<?, ?> api) {
             if (api.get("enabled") instanceof Boolean b) next.getApi().setEnabled(b);

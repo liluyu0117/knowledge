@@ -157,6 +157,9 @@ function initDraft(list) {
 onMounted(async () => {
   const st0 = applySettings(await api.get('/api/settings'), { resetDraft: true })
   autoMinutes.value = st0.index?.autoMinutes ?? 0
+  chunkMode.value = st0.index?.chunkMode || 'fixed'
+  childChars.value = st0.index?.childChars ?? 380
+  parentChars.value = st0.index?.parentChars ?? 2000
   apiCfg.value = { ...(st0.api || { enabled: false, key: '' }) }
   mcpEnabled.value = st0.mcp?.enabled !== false
   loadMcp()
@@ -412,6 +415,25 @@ function saveAutoMinutes(v) {
   api.putJson('/api/settings', { index: { autoMinutes: v } }).then(() => {
     ElMessage.success(v ? '已开启自动增量重扫' : '已关闭自动重扫')
   })
+}
+
+// ── 分块模式 ──
+const chunkMode = ref('fixed')
+const childChars = ref(380)
+const parentChars = ref(2000)
+
+function saveChunkMode(v) {
+  chunkMode.value = v
+  api.putJson('/api/settings', { index: { chunkMode: v } }).then(() => {
+    ElMessage.success(v === 'parent-child'
+      ? '已切换到父子分块，请到「知识库」页构建索引（自动全量重建）'
+      : '已切换到滑动窗口分块，请到「知识库」页构建索引（自动全量重建）')
+  })
+}
+
+function saveChunkParams() {
+  api.putJson('/api/settings', { index: { childChars: childChars.value, parentChars: parentChars.value } })
+    .then(() => ElMessage.success('已保存，下次构建生效（全量重建）'))
 }
 
 function loadUsage() {
@@ -747,6 +769,35 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
 
           <!-- ══ 索引与用量 ══ -->
           <template v-else-if="tab === 'retrieval'">
+            <section class="card">
+              <div class="card-h">
+                <div>
+                  <div class="sec-title">分块模式</div>
+                  <div class="sec-sub">决定文档切分成检索单元的方式，改动后下次构建自动全量重建</div>
+                </div>
+                <el-select :model-value="chunkMode" size="small" style="width:240px" @change="saveChunkMode">
+                  <el-option value="fixed" label="滑动窗口（默认）" />
+                  <el-option value="parent-child" label="父子分块（检索子块 / 回读小节）" />
+                </el-select>
+              </div>
+              <div class="notes" v-if="chunkMode === 'parent-child'">
+                <div class="note-line">
+                  子块
+                  <el-input-number v-model="childChars" size="small" :min="120" :max="800" :step="20"
+                                   style="width:110px;margin:0 6px" @change="saveChunkParams" />
+                  字 · 父块上限
+                  <el-input-number v-model="parentChars" size="small" :min="600" :max="6000" :step="200"
+                                   style="width:120px;margin:0 6px" @change="saveChunkParams" />
+                  字
+                </div>
+                <div class="note-line"><b>检索</b>用小子块，定位更准；<b>回答</b>用整小节上下文，句子不再被拦腰截断</div>
+                <div class="note-line">切换或调参后全库分块结构变化，需要点「知识库 → 构建索引」全量重建（向量会按内容 hash 自动复用）</div>
+              </div>
+              <div class="notes" v-else>
+                <div class="note-line">按目标块长滑动窗口切分，相邻窗口带重叠，是最稳妥的通用方式</div>
+              </div>
+            </section>
+
             <section class="card">
               <div class="card-h">
                 <div>

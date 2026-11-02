@@ -81,12 +81,29 @@ public class IndexBuilder {
                             int added, int updated, int skipped, int removed,
                             int embedded, int vectorFailed, int errors, Integer vectorDim,
                             List<Map<String, String>> failed, List<String> empty,
-                            Map<String, String> emptySigs) {}
+                            Map<String, String> emptySigs, String chunkMode) {
+        /** 兼容旧 JSON（无 chunkMode 字段）。 */
+        public BuildInfo(String kbId, String kbName, String phase, long builtAt, long durationMs,
+                         int files, int indexed, int chunks,
+                         int added, int updated, int skipped, int removed,
+                         int embedded, int vectorFailed, int errors, Integer vectorDim,
+                         List<Map<String, String>> failed, List<String> empty,
+                         Map<String, String> emptySigs) {
+            this(kbId, kbName, phase, builtAt, durationMs, files, indexed, chunks,
+                    added, updated, skipped, removed, embedded, vectorFailed, errors, vectorDim,
+                    failed, empty, emptySigs, "fixed");
+        }
+    }
 
     public record OldChunk(int seq, String chunkHash, float[] vector) {}
 
     /** 解析完成的块（向量可能为空，等待向量化阶段补齐）。 */
-    private record PendingChunk(int seq, String heading, String text, String hash, float[] vec) {}
+    private record PendingChunk(int seq, String heading, String text, String hash, float[] vec,
+                                int parentStart, int parentEnd) {
+        PendingChunk(int seq, String heading, String text, String hash, float[] vec) {
+            this(seq, heading, text, hash, vec, seq, seq);
+        }
+    }
 
     /** 解析完成、等待向量化的文件。 */
     private record PendingFile(String rel, String title, String ext, String kind, String folder,
@@ -148,6 +165,7 @@ public class IndexBuilder {
     private volatile CountDownLatch confirmLatch;
     private volatile boolean cancelled = false;
     private volatile boolean skipVectorThisRun = false;
+    private volatile boolean forceFullNextRun = false;
 
     public IndexBuilder(ConfigService config, FileScanner scanner, TikaExtractor extractor,
                         Chunker chunker, ObjectProvider<EmbeddingClient> embeddingProvider,
@@ -209,9 +227,15 @@ public class IndexBuilder {
     }
 
     public boolean start(String kbId) {
+        return start(kbId, false);
+    }
+
+    /** forceFull=true 时无视指纹直接清空索引全量重建（用于状态修复或手动强制）。 */
+    public boolean start(String kbId, boolean forceFull) {
         if (!running.compareAndSet(false, true)) return false;
         cancelled = false;
         skipVectorThisRun = false;
+        this.forceFullNextRun = forceFull;
         AppConfig cfg = config.get();
         kbapp.kb.KbRegistry.KbEntry kb = registry.byId(kbId);
         if (kb == null || registry.docsRoot(kb) == null) {
@@ -315,6 +339,28 @@ public class IndexBuilder {
                 log.warn("向量维度 {} -> {} 变更，清空索引全量重建", existingDim, wantDim);
                 writer.deleteAll();
             }
+            // 分块方案变更（模式或任何分块参数）→ 全量重建，否则旧块结构和新分块混在一起。
+            // 指纹记录在索引自身的 commit userData 里，与数据同生共死 —— 放 BuildInfo 会被
+            // 「无变化构建」覆盖，造成标记与索引内容错位。
+            AppConfig.IndexCfg ic = cfg.getIndex();
+            String wantMode = ic.getChunkMode();
+            String wantSig = wantMode + "|" + ic.getChunkChars() + "|" + ic.getChunkOverlapChars()
+                    + "|" + ic.getMinChunkChars() + "|" + ic.getChildChars() + "|" + ic.getParentChars();
+            String oldSig = null;
+            try (DirectoryReader r = DirectoryReader.open(writer)) {
+                oldSig = r.getIndexCommit().getUserData().get("chunkSig");
+            } catch (Exception ignored) { /* 空索引按无指纹 */ }
+            // 指纹缺失但索引里有数据（旧版本建的索引）同样要全量重建，否则分块方案标记与内容错位
+            boolean chunkMismatch = forceFullNextRun
+                    || (oldSig == null
+                        ? detectVectorDim(writer) != null
+                        : !oldSig.equals(wantSig));
+            if (chunkMismatch) {
+                log.warn("分块方案变更（force={}）{} -> {}，清空索引全量重建", forceFullNextRun, oldSig, wantSig);
+                writer.deleteAll();
+            }
+            forceFullNextRun = false;
+            writer.setLiveCommitData(java.util.List.of(java.util.Map.entry("chunkSig", wantSig)));
             final Integer vDim = wantDim;
             update(p -> p.vectorDim = vDim);
             EmbeddingClient emb = wantDim != null ? embeddingProvider.getIfAvailable() : null;
@@ -523,7 +569,8 @@ public class IndexBuilder {
                     List<PendingChunk> filled = new ArrayList<>(chunks.size());
                     for (int k = 0; k < chunks.size(); k++) {
                         PendingChunk c = chunks.get(k);
-                        filled.add(new PendingChunk(c.seq(), c.heading(), c.text(), c.hash(), vecs[k]));
+                        filled.add(new PendingChunk(c.seq(), c.heading(), c.text(), c.hash(), vecs[k],
+                                c.parentStart(), c.parentEnd()));
                     }
                     writer.deleteDocuments(new Term(IndexSchema.DOC_PATH, pf.rel()));
                     for (PendingChunk c : filled) writer.addDocument(toDoc(pf, c));
@@ -616,6 +663,9 @@ public class IndexBuilder {
         Document d = new Document();
         IndexSchema.fill(d, pf.rel(), pf.title(), pf.ext(), pf.kind(), pf.folder(),
                 c.seq(), c.heading(), c.text(), c.hash(), pf.fileHash(), pf.sig(), c.vec());
+        if (c.parentStart() != c.seq() || c.parentEnd() != c.seq()) {
+            IndexSchema.addParentRange(d, c.parentStart(), c.parentEnd());
+        }
         return d;
     }
 
@@ -640,13 +690,17 @@ public class IndexBuilder {
         }
 
         Extracted extracted = extractor.extract(f);
-        List<Chunk> chunks = chunker.chunk(extracted, cfg.getIndex());
+        boolean parentChild = "parent-child".equalsIgnoreCase(cfg.getIndex().getChunkMode());
+        List<Chunk> chunks = parentChild
+                ? chunker.chunkParentChild(extracted, cfg.getIndex())
+                : chunker.chunk(extracted, cfg.getIndex());
         List<PendingChunk> pcs = new ArrayList<>(chunks.size());
         for (Chunk c : chunks) {
             String hash = sha1(c.text().getBytes(StandardCharsets.UTF_8));
             float[] vec = oldVectors.get(c.seq());
             if (vec == null || !hash.equals(oldHashes.get(c.seq()))) vec = null; // hash 不一致不复用
-            pcs.add(new PendingChunk(c.seq(), c.headingPath(), c.text(), hash, vec));
+            pcs.add(new PendingChunk(c.seq(), c.headingPath(), c.text(), hash, vec,
+                    c.parentStart(), c.parentEnd()));
         }
         return new PendingFile(rel, title, ext, kind, folder, fileHash, sig, isNew, pcs);
     }
@@ -707,7 +761,8 @@ public class IndexBuilder {
         BuildInfo info = new BuildInfo(kb.id(), kb.name(), phase, System.currentTimeMillis(), durationMs,
                 files, docCount, chunkCount, added, updated, skipped, removed,
                 embedded, vectorFailed, errors, prog.vectorDim,
-                new ArrayList<>(failed), new ArrayList<>(empty), new HashMap<>(emptySigs));
+                new ArrayList<>(failed), new ArrayList<>(empty), new HashMap<>(emptySigs),
+                config.get().getIndex().getChunkMode());
         lastBuilds.put(kb.id(), info);
         try {
             Path dir = config.dataDir().resolve("build");

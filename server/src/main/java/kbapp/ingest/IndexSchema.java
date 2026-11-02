@@ -28,6 +28,9 @@ public final class IndexSchema {
     public static final String VECTOR_BIN = "vectorBin";
     /** 向量维度（0/缺省 = 该块无向量）。用于低成本判断向量覆盖，避免为统计加载整个向量。 */
     public static final String VEC_DIM = "vecDim";
+    /** 父子分块：该子块所属父块覆盖的子块 seq 区间（含端点）；缺省 = fixed 模式（无父块概念）。 */
+    public static final String PARENT_START = "parentStart";
+    public static final String PARENT_END = "parentEnd";
 
     private IndexSchema() {}
 
@@ -53,6 +56,11 @@ public final class IndexSchema {
         } else {
             d.add(new StoredField(VEC_DIM, 0));
         }
+    }
+
+    public static void addParentRange(Document d, int parentStart, int parentEnd) {
+        d.add(new StoredField(PARENT_START, parentStart));
+        d.add(new StoredField(PARENT_END, parentEnd));
     }
 
     public static String getString(Document d, String field) {
