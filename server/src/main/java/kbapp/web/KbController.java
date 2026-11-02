@@ -33,14 +33,16 @@ public class KbController {
     private final IndexBuilder builder;
     private final HybridSearchService searchSvc;
     private final kbapp.retrieve.DocMetaStore docMeta;
+    private final kbapp.ingest.UrlIngestService urlIngest;
     private static final Logger log = LoggerFactory.getLogger(KbController.class);
 
     public KbController(KbRegistry registry, IndexBuilder builder, HybridSearchService searchSvc,
-                        kbapp.retrieve.DocMetaStore docMeta) {
+                        kbapp.retrieve.DocMetaStore docMeta, kbapp.ingest.UrlIngestService urlIngest) {
         this.registry = registry;
         this.builder = builder;
         this.searchSvc = searchSvc;
         this.docMeta = docMeta;
+        this.urlIngest = urlIngest;
     }
 
     @GetMapping("/s")
@@ -497,6 +499,35 @@ public class KbController {
             });
         }
         return failed;
+    }
+
+    // ───────────────────────── URL 网页接入 ─────────────────────────
+
+    public record FetchBody(List<String> urls, String folder, List<String> tags) {}
+
+    /** 抓取网页转 Markdown 存入知识库；只支持无需登录的静态页。 */
+    @PostMapping("/{id}/fetch-url")
+    public Map<String, Object> fetchUrl(@PathVariable String id, @RequestBody FetchBody body) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        KbRegistry.KbEntry kb = registry.byId(id);
+        if (kb == null) { m.put("ok", false); m.put("error", "知识库不存在"); return m; }
+        if (body == null || body.urls() == null || body.urls().isEmpty()) {
+            m.put("ok", false); m.put("error", "请填写至少一条 URL"); return m;
+        }
+        List<kbapp.ingest.UrlIngestService.UrlResult> results =
+                urlIngest.fetchAll(kb.id(), body.urls(), body.folder() == null ? "" : body.folder());
+        // 抓取成功的文档顺带落标签
+        Map<String, List<String>> tagsByPath = new LinkedHashMap<>();
+        for (var r : results) {
+            if (r.ok() && body.tags() != null && !body.tags().isEmpty()) tagsByPath.put(r.path(), body.tags());
+        }
+        if (!tagsByPath.isEmpty()) docMeta.setTagsBulk(kb.id(), tagsByPath, "url");
+        m.put("ok", true);
+        m.put("results", results);
+        long okCount = results.stream().filter(kbapp.ingest.UrlIngestService.UrlResult::ok).count();
+        m.put("success", okCount);
+        m.put("failed", results.size() - okCount);
+        return m;
     }
 
     // ───────────────────────── 文档元数据（标签） ─────────────────────────

@@ -4,7 +4,7 @@ import { api } from '../api'
 import { preview } from '../store/preview'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, Document, Loading, Delete, Upload, PriceTag } from '@element-plus/icons-vue'
+import { Folder, Document, Loading, Delete, Upload, PriceTag, Link } from '@element-plus/icons-vue'
 
 const kbs = ref([])
 const currentId = ref('')
@@ -224,6 +224,41 @@ function hasTag(path) {
 
 function openTagEdit(n) {
   tagEdit.value = { show: true, path: n.path, tags: [...tagsOf(n.path)] }
+}
+
+// ── 网页接入 ──
+const urlDialog = ref(false)
+const urlText = ref('')
+const urlFolder = ref(ROOT_DIR)
+const urlTags = ref([])
+const urlBusy = ref(false)
+const urlResults = ref([])
+const urlCount = computed(() => urlText.value.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length)
+
+async function doFetchUrl() {
+  const urls = urlText.value.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
+  if (!urls.length) return
+  urlBusy.value = true
+  urlResults.value = []
+  try {
+    const r = await api.post(`/api/kb/${currentId.value}/fetch-url`, {
+      urls,
+      folder: urlFolder.value === ROOT_DIR ? '' : urlFolder.value,
+      tags: urlTags.value,
+    })
+    urlResults.value = r.results || []
+    const ok = r.success || 0
+    if (ok > 0) {
+      ElMessage.success(`已抓取 ${ok} 篇网页，点「构建索引」后进入检索`)
+      loadTree(currentId.value)
+    } else {
+      ElMessage.error('全部抓取失败，见明细')
+    }
+  } catch (e) {
+    ElMessage.error('抓取失败：' + e)
+  } finally {
+    urlBusy.value = false
+  }
 }
 
 async function saveTags() {
@@ -489,6 +524,9 @@ const failedList = computed(() => st.value?.last?.failed || [])
         <el-button size="small" type="primary" plain :disabled="!currentId" @click="openUpload">
           <el-icon style="margin-right:4px"><Upload /></el-icon>上传文档
         </el-button>
+        <el-button size="small" plain :disabled="!currentId" @click="urlDialog = true">
+          <el-icon style="margin-right:4px"><Link /></el-icon>网页接入
+        </el-button>
         <el-tooltip content="增量构建：只处理新增与变更的文件，向量按内容 hash 复用，不重复调用接口" placement="bottom">
           <el-button size="small" :disabled="!currentId || runningForThis" @click="rebuildKb">构建索引</el-button>
         </el-tooltip>
@@ -698,6 +736,42 @@ const failedList = computed(() => st.value?.last?.failed || [])
       </template>
     </el-dialog>
 
+    <!-- 网页接入对话框 -->
+    <el-dialog v-model="urlDialog" title="网页接入（抓取网页存为文档）" width="600px">
+      <el-form label-width="80px">
+        <el-form-item label="URL 列表">
+          <el-input v-model="urlText" type="textarea" :rows="5"
+                    placeholder="每行一条，如：&#10;https://example.com/docs/getting-started&#10;https://example.com/docs/faq" />
+        </el-form-item>
+        <el-form-item label="目标目录">
+          <el-select v-model="urlFolder" style="width:100%">
+            <el-option v-for="o in folderOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="标签">
+          <el-select v-model="urlTags" multiple filterable allow-create default-first-option
+                     placeholder="可选，回车添加" style="width:100%">
+            <el-option v-for="t in knownTags" :key="t" :label="t" :value="t" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <div class="formhint">只支持无需登录的静态页面；JS 渲染页 / 需登录页会抓到空壳并明确报错。抓取完成后点「构建索引」进入检索。</div>
+      <div v-if="urlResults.length" class="urlres">
+        <div v-for="(r, i) in urlResults" :key="i" class="urlrow">
+          <span class="ust" :class="r.ok ? 'ok' : 'fail'">{{ r.ok ? '✓' : '✗' }}</span>
+          <span class="uurl" :title="r.url">{{ r.url }}</span>
+          <span class="uinfo" v-if="r.ok">{{ r.path }} · {{ Math.round(r.chars / 1000) }}k 字</span>
+          <span class="uinfo fail" v-else :title="r.error">{{ r.error?.slice(0, 40) }}</span>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="urlDialog = false">关闭</el-button>
+        <el-button type="primary" :loading="urlBusy" :disabled="!urlText.trim()" @click="doFetchUrl">
+          抓取{{ urlCount ? ` ${urlCount} 条` : '' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 标签编辑对话框 -->
     <el-dialog v-model="tagEdit.show" title="编辑文档标签" width="480px">
       <div class="tagpath">{{ tagEdit.path }}</div>
@@ -843,4 +917,13 @@ const failedList = computed(() => st.value?.last?.failed || [])
   color:var(--el-color-primary);max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dtag.more{background:var(--el-fill-color);color:var(--el-text-color-secondary)}
 .tagpath{font-size:var(--fs-xs);color:var(--el-text-color-secondary);word-break:break-all}
+.urlres{margin-top:10px;border:1px solid var(--el-border-color-light);border-radius:8px;max-height:200px;overflow:auto}
+.urlrow{display:flex;gap:8px;align-items:center;padding:6px 10px;font-size:var(--fs-xs);border-bottom:1px dashed var(--el-border-color-lighter)}
+.urlrow:last-child{border-bottom:0}
+.urlrow .ust{flex:0 0 16px;font-weight:600}
+.urlrow .ust.ok{color:var(--el-color-success)}
+.urlrow .ust.fail{color:var(--el-color-danger)}
+.urlrow .uurl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--el-text-color-primary)}
+.urlrow .uinfo{color:var(--el-text-color-secondary);max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.urlrow .uinfo.fail{color:var(--el-color-danger)}
 </style>
