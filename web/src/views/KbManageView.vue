@@ -451,33 +451,57 @@ function fsPick() {
   fsDialog.value = false
 }
 
-// ── 文件树扁平化（懒展开：默认只渲染第一层，点开的文件夹才渲染子层）──
-const expanded = ref({})     // path -> 是否展开；默认全部折叠
+// ── 文件树扁平化（懒展开 + 每层限量：默认只渲染第一层，点开的文件夹才下钻）──
+const expanded = ref({})      // path -> 是否展开；默认全部折叠
+const moreOpened = ref({})    // path -> 已点开「显示全部」的文件夹
+const CHILD_LIMIT = 100       // 每层最多直接渲染的子节点数，超出折叠为「还有 N 项」
 const flatTree = computed(() => {
   const rows = []
   const filtering = tagFilter.value.length > 0
-  function walk(nodes, depth) {
+  function walk(nodes, depth, parentKey) {
+    const limit = filtering ? Infinity : Number(moreOpened.value[parentKey] ?? CHILD_LIMIT)
+    let shown = 0, hidden = 0
     for (const n of nodes) {
+      if (shown >= limit) { hidden++; continue }
       if (n.type === 'folder') {
         const start = rows.length
         rows.push({ ...n, depth })
         // 标签筛选时无视折叠全量下钻（否则折叠的文件夹里命中的文件看不见）
-        if (filtering || expanded.value[n.path]) walk(n.children, depth + 1)
+        if (filtering || expanded.value[n.path]) walk(n.children, depth + 1, n.path)
         // 标签筛选时，没有任何命中后代的空文件夹直接隐藏
         if (filtering && rows.length === start + 1) rows.length = start
+        shown++
       } else {
         if (filtering && !hasTag(n.path)) continue
         rows.push({ ...n, depth })
+        shown++
       }
     }
+    if (hidden > 0) {
+      rows.push({ type: 'more', path: parentKey, depth, hidden, name: `还有 ${hidden} 项，点击展开` })
+    }
   }
-  walk(tree.value.children || [], 0)
+  walk(tree.value.children || [], 0, '__root__')
   return rows
 })
 
 function toggleNode(n) {
   if (n.type !== 'folder') return
   expanded.value = { ...expanded.value, [n.path]: !expanded.value[n.path] }
+}
+
+function showMore(n) {
+  moreOpened.value = { ...moreOpened.value, [n.path]: Infinity }
+}
+
+/** 树形缩进引导线：每行按层级在各级缩进处画竖线，形成连续的树干线。 */
+function guides(depth) {
+  if (!depth) return ''
+  const parts = []
+  for (let i = 0; i < depth; i++) {
+    parts.push(`linear-gradient(var(--el-border-color-lighter), var(--el-border-color-lighter)) no-repeat ${16 + i * 20}px 0/1px 100%`)
+  }
+  return parts.join(',')
 }
 
 function openFile(n) {
@@ -642,11 +666,14 @@ const failedList = computed(() => st.value?.last?.failed || [])
         <el-tab-pane label="文件树" name="tree">
           <div v-loading="treeLoading" class="treebox">
             <div class="tree">
-              <div v-for="n in flatTree" :key="n.path" class="tnode" :class="{ folder: n.type === 'folder' }"
-                   :style="{ paddingLeft: 8 + n.depth * 22 + 'px' }" @click="n.type === 'folder' ? toggleNode(n) : openFile(n)">
-                <span class="caret">{{ n.type === 'folder' ? (expanded[n.path] ? '▾' : '▸') : '' }}</span>
-                <el-icon class="tic"><component :is="n.type === 'folder' ? Folder : Document" /></el-icon>
+              <div v-for="n in flatTree" :key="n.type + n.path" class="tnode"
+                   :class="{ folder: n.type === 'folder', more: n.type === 'more' }"
+                   :style="{ paddingLeft: 16 + n.depth * 20 + 'px', backgroundImage: guides(n.depth) }"
+                   @click="n.type === 'folder' ? toggleNode(n) : n.type === 'more' ? showMore(n) : openFile(n)">
+                <span class="caret" v-if="n.type !== 'more'">{{ n.type === 'folder' ? (expanded[n.path] ? '▾' : '▸') : '' }}</span>
+                <el-icon class="tic" v-if="n.type !== 'more'"><component :is="n.type === 'folder' ? Folder : Document" /></el-icon>
                 <span class="nm">{{ n.name }}</span>
+                <template v-if="n.type !== 'more'">
                 <span class="st-slot">
                   <el-icon v-if="nodeBuilding(n)" class="st-spin" :size="13"><Loading /></el-icon>
                   <el-tooltip v-else-if="n.type === 'file' && stMeta(n).tip" :content="n.failReason || stMeta(n).tip" placement="top">
@@ -659,7 +686,8 @@ const failedList = computed(() => st.value?.last?.failed || [])
                   <span v-for="t in tagsOf(n.path).slice(0, 3)" :key="t" class="dtag" :title="t">{{ t }}</span>
                   <span v-if="tagsOf(n.path).length > 3" class="dtag more">+{{ tagsOf(n.path).length - 3 }}</span>
                 </span>
-                <span class="cnt">
+                </template>
+                <span class="cnt" v-if="n.type !== 'more'">
                   <template v-if="n.type === 'folder'">{{ n.fileCount || 0 }} 文件<template v-if="n.chunkSum"> · {{ n.chunkSum }} 块</template></template>
                   <template v-else-if="n.chunkCount">{{ n.chunkCount }} 分块</template>
                 </span>
@@ -874,6 +902,8 @@ const failedList = computed(() => st.value?.last?.failed || [])
 .tnode{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer}
 .tnode:hover{background:var(--el-fill-color-light)}
 .tnode.folder{font-weight:600}
+.tnode.more{font-style:italic;color:var(--el-color-primary);font-weight:400}
+.tnode.more .nm{font-size:var(--fs-xs)}
 .tnode .caret{font-size:9px;color:var(--el-text-color-secondary);width:10px}
 .tnode .tic{color:var(--el-text-color-secondary)}
 .tnode .nm{color:var(--el-text-color-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
