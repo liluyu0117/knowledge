@@ -323,12 +323,15 @@ async function createKb() {
   }
 }
 
+const kbDeleteBusy = ref(false)
+
 function deleteKb() {
   const k = currentKb.value
-  if (!k) return
+  if (!k || kbDeleteBusy.value) return
   ElMessageBox.confirm(`删除知识库「${k.name}」？索引与文档副本将一并删除（源目录不受影响）。`, '删除知识库', {
     type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
   }).then(() => {
+    kbDeleteBusy.value = true
     api.del('/api/kb/' + k.id).then((r) => {
       const left = r?.leftoverCount || 0
       if (left) {
@@ -343,7 +346,7 @@ function deleteKb() {
       }
       currentId.value = ''
       reloadKbs().then(() => kbs.value.length && selectKb(kbs.value[0]))
-    })
+    }).finally(() => { kbDeleteBusy.value = false })
   }).catch(() => {})
 }
 
@@ -566,7 +569,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
         <el-tooltip content="增量构建：只处理新增与变更的文件，向量按内容 hash 复用，不重复调用接口" placement="bottom">
           <el-button size="small" :disabled="!currentId || runningForThis" @click="rebuildKb">构建索引</el-button>
         </el-tooltip>
-        <el-button size="small" type="danger" plain :disabled="!currentId" @click="deleteKb">删除</el-button>
+        <el-button size="small" type="danger" plain :disabled="!currentId || kbDeleteBusy" :loading="kbDeleteBusy" @click="deleteKb">删除</el-button>
         <span class="hstat" v-if="stats">
           <span class="hs"><b>{{ stats.files }}</b> 文件</span>
           <span class="hs"><b>{{ stats.indexable }}</b> 可索引</span>
