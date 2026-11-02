@@ -36,12 +36,16 @@ public class OpenAiCompatEmbedding implements EmbeddingClient {
 
     @Override
     public List<float[]> embedAll(List<String> texts) {
-        return embedAll(texts, null);
+        return embedAll(texts, (String) null);
     }
 
     /** 指定厂商名的 embedding（连通性测试用）；null 走当前 activeEmbedding。 */
     public List<float[]> embedAll(List<String> texts, String providerName) {
-        AppConfig.Provider p = resolveProvider(providerName);
+        return embedAll(texts, resolveProvider(providerName));
+    }
+
+    /** 用给定的（可能尚未保存的）厂商配置跑 embedding，设置页「测试向量」用。 */
+    public List<float[]> embedAll(List<String> texts, AppConfig.Provider p) {
         WebClient client = WebClient.builder()
                 .baseUrl(p.getBaseUrl())
                 .defaultHeader("Authorization", "Bearer " + p.getApiKey())

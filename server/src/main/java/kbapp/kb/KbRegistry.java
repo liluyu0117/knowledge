@@ -125,6 +125,18 @@ public class KbRegistry {
         return entries.stream().filter((k) -> k.id().equals(id)).findFirst().orElse(null);
     }
 
+    /**
+     * 统一的「解析知识库」入口：id 或名称都认；空则用第一个库；找不到返回 null。
+     * 供 MCP 工具与开放接口共用，避免各处自己拼兜底逻辑。
+     */
+    public synchronized KbEntry resolve(String kbIdOrName) {
+        if (kbIdOrName == null || kbIdOrName.isBlank()) return entries.isEmpty() ? null : entries.get(0);
+        String want = kbIdOrName.trim();
+        for (KbEntry k : entries) if (k.id().equals(want)) return k;
+        for (KbEntry k : entries) if (k.name().equalsIgnoreCase(want) || k.name().contains(want)) return k;
+        return null;
+    }
+
     public synchronized KbEntry create(String name, String sourcePath) {
         String id = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         KbEntry e = new KbEntry(id, name, sourcePath,

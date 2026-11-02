@@ -1,5 +1,5 @@
 <script setup>
-import { ref, shallowRef, computed, watch } from 'vue'
+import { ref, shallowRef, computed, watch, nextTick } from 'vue'
 import { api } from '../api'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
@@ -22,6 +22,8 @@ const pdfCanvasHost = ref(null)
 const pdfDoc = shallowRef(null)
 const textChunks = ref([])
 const highlightSeq = ref(null)
+const locChunk = ref(null)        // 当前要定位的块（用于文档内高亮）
+const locateState = ref('')       // '' | doc（文档内已高亮）| fallback（只能看命中片段）
 
 const drawerVisible = computed({
   get: () => !!props.target?.open,
@@ -48,7 +50,14 @@ watch(() => props.target, async (t) => {
   textChunks.value = []
   loadError.value = ''
   highlightSeq.value = t.seq ?? null
+  locChunk.value = null
+  locateState.value = ''
   tab.value = 'preview'
+  if (t.seq != null && t.seq >= 0) {
+    api.get('/api/doc/text?path=' + encodeURIComponent(t.docPath) + '&seq=' + t.seq + '&kbId=' + props.kbId)
+      .then((d) => { locChunk.value = d.chunks?.[0] || null })
+      .catch(() => { locChunk.value = null })
+  }
   loading.value = true
   try {
     const head = await api.get('/api/doc/meta?path=' + encodeURIComponent(t.docPath) + '&kbId=' + props.kbId)
@@ -61,6 +70,10 @@ watch(() => props.target, async (t) => {
       })
       const res = await m.convertToHtml({ arrayBuffer: buf })
       docxHtml.value = res.value
+      // 旧会话里的引用可能是迁移前的路径，文件已不在：给出明确提示而不是空白
+      if (!docxHtml.value || !docxHtml.value.trim()) {
+        throw new Error('文档内容为空：该引用可能来自旧版路径，文档已迁移，请重新提问获取最新引用')
+      }
     } else if (mode.value === 'pdf') {
       const pdfjs = await import('pdfjs-dist')
       pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
@@ -84,15 +97,27 @@ watch(() => props.target, async (t) => {
       activeSheet.value = 0
     } else {
       const t2 = await api.get('/api/doc/text?path=' + encodeURIComponent(t.docPath) + (t.seq != null ? '&seq=' + t.seq : '') + '&kbId=' + props.kbId)
-      textChunks.value = t2.chunks
+      textChunks.value = t2.chunks || []
+      if (!textChunks.value.length && t.seq != null) {
+        throw new Error('该块在索引里已不存在（引用可能来自旧版路径），请重新提问获取最新引用')
+      }
     }
   } catch (e) {
-    loadError.value = String(e && e.message ? e.message : e)
+    const msg = String(e && e.message ? e.message : e)
+    // 旧会话的引用路径可能已被迁移 / 文档被删：换成能看懂的说法
+    loadError.value = /404|原文件获取失败/.test(msg)
+      ? '预览不可用：文档已不在原路径（常见于旧会话的引用），请重新提问获取最新引用'
+      : msg
   } finally {
     loading.value = false
     if (mode.value === 'pdf') {
       await nextFrame()
-      renderPdf().catch((e) => { loadError.value = 'PDF 渲染失败: ' + (e?.message || e) })
+      renderPdf()
+        .catch((e) => { loadError.value = 'PDF 渲染失败: ' + (e?.message || e) })
+        .finally(() => { nextTick(() => locateInDoc()) })
+    } else {
+      await nextTick()
+      locateInDoc()
     }
   }
 })
@@ -135,11 +160,91 @@ const mdHtml = computed(() => {
   return mdToHtml(text)
 })
 
+/** 当前格式是否直接渲染块（其余格式是原样预览，块级内容在「命中片段」里） */
+const hasChunkView = computed(() => !['docx', 'pdf', 'xlsx', 'md', 'code', 'html'].includes(mode.value))
+
+/** 规范化文本：去掉所有空白，便于跨段落匹配 */
+const norm = (s2) => String(s2 || '').replace(/\s+/g, '')
+
+/**
+ * 在原样预览里定位：docx/md 高亮匹配段落；pdf 找到所在页；
+ * 找不到就退回「命中片段」。
+ */
+async function locateInDoc() {
+  const chunk = locChunk.value
+  if (!chunk || !chunk.text) return
+  const key = norm(chunk.text).slice(0, 24)
+  if (!key) return
+
+  if (mode.value === 'pdf') {
+    const host = pdfCanvasHost.value
+    if (!host || !pdfDoc.value) { locateState.value = 'fallback'; return }
+    const canvases = [...host.querySelectorAll('canvas')]
+    for (let i = 0; i < canvases.length; i++) {
+      try {
+        const page = await pdfDoc.value.getPage(i + 1)
+        const tc = await page.getTextContent()
+        const text = norm(tc.items.map((it) => it.str).join(''))
+        if (text.includes(key) || (key.length > 10 && text.includes(key.slice(0, 10)))) {
+          canvases[i].classList.add('loc-page')
+          canvases[i].scrollIntoView({ block: 'center', behavior: 'smooth' })
+          locateState.value = 'doc'
+          return
+        }
+      } catch (e) { /* 单页失败忽略 */ }
+    }
+    locateState.value = 'fallback'
+    return
+  }
+
+  const host = document.querySelector('.docx.rich') || document.querySelector('.md-view')
+  if (!host) { locateState.value = 'fallback'; return }
+
+  const blocks = [...host.querySelectorAll('p, li, td, h1, h2, h3, h4, h5, h6, blockquote')]
+  let best = null
+  let bestLen = 0
+  for (const el of blocks) {
+    const t2 = norm(el.innerText || el.textContent)
+    if (!t2) continue
+    if (t2.includes(key)) { best = el; bestLen = key.length; break }
+    // 段落被切开时退一步：取公共前缀长度
+    let n = 0
+    const max = Math.min(t2.length, key.length, 30)
+    while (n < max && t2[n] === key[n]) n++
+    if (n > bestLen) { bestLen = n; best = el }
+  }
+
+  if (best && bestLen >= 6) {
+    best.classList.add('loc-block')
+    best.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    locateState.value = 'doc'
+  } else {
+    locateState.value = 'fallback'
+  }
+}
+
+watch(locChunk, (c) => { if (c) nextTick(() => locateInDoc()) })
+
+/** 滚到命中块并闪一下，让"点引用跳过来"能一眼看到位置 */
+let flashTimer = null
+function jumpToChunk() {
+  nextTick(() => {
+    const el = document.querySelector('.dw-body .chunk.hl') || document.querySelector('.hits-pane .chunk.hl')
+    if (!el) return
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    el.classList.add('flash')
+    if (flashTimer) clearTimeout(flashTimer)
+    flashTimer = setTimeout(() => el.classList.remove('flash'), 2400)
+  })
+}
+watch([loading, () => textChunks.value.length, tab], () => { if (!loading.value) jumpToChunk() })
+
 watch(tab, (t2) => { if (t2 === 'hits') loadHits() })
 const hitChunks = ref([])
 async function loadHits() {
   const t = props.target
   hitChunks.value = (await api.get('/api/doc/text?path=' + encodeURIComponent(t.docPath) + '&kbId=' + props.kbId)).chunks
+  jumpToChunk()
 }
 </script>
 
@@ -159,6 +264,16 @@ async function loadHits() {
     </el-tabs>
     <div class="dw-btns">
       <el-button size="small" @click="openRaw">打开原文件</el-button>
+    </div>
+
+    <div v-if="target?.seq != null" class="locate">
+      <span class="ldot"></span>
+      <span>已定位到第 <b>{{ target.seq }}</b> 块</span>
+      <span v-if="locateState === 'doc'" class="lnote">文档内已高亮命中段落</span>
+      <span v-else-if="locateState === 'fallback' && !hasChunkView" class="lnote">
+        该格式无法在原文里精确定位，块内容看「命中片段」
+      </span>
+      <el-button v-if="tab !== 'hits'" link size="small" @click="tab = 'hits'">查看命中片段</el-button>
     </div>
 
     <div class="dw-body" v-loading="loading" element-loading-text="加载中…">
@@ -264,6 +379,30 @@ async function loadHits() {
 .md-view a{color:var(--accent)}
 .ppt-text .chunk{border:1px solid var(--line);border-radius:var(--radius);padding:11px 15px;margin-bottom:9px;background:var(--paper)}
 .ppt-text .chunk.hl{border-color:var(--accent);background:var(--accent-soft)}
+.locate{display:flex;align-items:center;gap:8px;margin:0 20px 10px;padding:7px 12px;border-radius:8px;
+  background:var(--accent-soft);color:var(--ink2);font-size:var(--fs-xs)}
+.locate .ldot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:0 0 6px}
+.locate b{color:var(--accent);font-weight:600}
+.locate .lnote{color:var(--ink3)}
+.locate .el-button{margin-left:auto}
+@keyframes chunkflash{
+  0%{box-shadow:0 0 0 0 rgba(99,102,241,.45)}
+  60%{box-shadow:0 0 0 6px rgba(99,102,241,.12)}
+  100%{box-shadow:0 0 0 0 rgba(99,102,241,0)}
+}
+.chunk.flash{animation:chunkflash 1.2s ease-out 2;border-color:var(--accent)}
+/* 文档内的命中段落高亮 */
+.docx.rich .loc-block, .md-view .loc-block{
+  background:linear-gradient(90deg, rgba(99,102,241,.16), rgba(99,102,241,.05));
+  border-left:3px solid var(--accent); border-radius:4px; padding:2px 8px; margin-left:-11px;
+  animation:docflash 1.4s ease-out 2;
+}
+.pdf-host canvas.loc-page{outline:2px solid var(--accent); outline-offset:4px; border-radius:4px; animation:docflash 1.4s ease-out 2}
+@keyframes docflash{
+  0%{box-shadow:0 0 0 0 rgba(99,102,241,.35)}
+  70%{box-shadow:0 0 0 8px rgba(99,102,241,.08)}
+  100%{box-shadow:0 0 0 0 rgba(99,102,241,0)}
+}
 .ppt-text .h{font-size:var(--fs-2xs);color:var(--ink3);margin-bottom:4px;font-family:var(--mono)}
 pre.code{white-space:pre-wrap;word-break:break-all;font-size:var(--fs-sm);line-height:1.85;font-family:var(--mono)}
 .html-frame{width:100%;height:100%;border:1px solid var(--line);border-radius:8px;background:#fff}

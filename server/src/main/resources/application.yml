@@ -1,5 +1,7 @@
 server:
   port: 8080
+  # 反代（nginx / cpolar 等）下让 Settings 页展示的 MCP 地址用对外协议与域名
+  forward-headers-strategy: framework
 
 spring:
   application:
@@ -11,9 +13,21 @@ spring:
     mcp:
       server:
         name: kb
-        version: 0.1.0
+        version: 0.2.0
         type: SYNC
-        # webmvc SSE 端点：/mcp（默认 sse-message-endpoint /mcp/message）
+        # WebMVC SSE：客户端连 /sse，消息端点 /mcp/message
+        sse-endpoint: /sse
+        sse-message-endpoint: /mcp/message
+        instructions: |
+          本机知识库检索服务（只读，不会调用大模型）。
+
+          推荐调用顺序：
+          1) kb_list —— 查看有哪些知识库；只有一个库时后续可省略 kbId（也接受库名）
+          2) kb_search —— 用文档里的原话检索；返回 path/seq/snippet，ref = path#seq
+          3) kb_open —— 需要更多上下文时按 path 打开全文，或用 seq 只取该块
+
+          注意：内容是内部业务文档，命中不足时先用 kb_docs 确认文档是否存在、是否已建索引，
+          不要凭空补写；引用时请给出 path（必要时带 seq）。
 
 kb:
   data-dir: .kb

@@ -34,6 +34,9 @@ public class SearchController {
         m.put("candidatesKw", r.candidatesKw());
         m.put("candidatesVec", r.candidatesVec());
         m.put("vectorUsed", r.vectorUsed());
+        m.put("rerankUsed", r.rerankUsed());
+        m.put("dropped", r.dropped());
+        m.put("expanded", r.expanded());
         m.put("results", r.hits());
         return m;
     }

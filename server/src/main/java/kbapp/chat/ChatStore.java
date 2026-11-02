@@ -42,6 +42,10 @@ public class ChatStore {
                           id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
                           role TEXT NOT NULL, content TEXT NOT NULL,
                           sources TEXT, model TEXT, created_at TEXT)""");
+                st.execute("""
+                        CREATE TABLE IF NOT EXISTS feedback(
+                          message_id TEXT PRIMARY KEY, session_id TEXT,
+                          rating INTEGER, note TEXT, created_at TEXT)""");
                 st.execute("CREATE INDEX IF NOT EXISTS idx_msg_session ON message(session_id)");
                 // 旧库升级：补列（已存在则忽略）
                 for (String ddl : new String[]{
@@ -142,6 +146,46 @@ public class ChatStore {
     public synchronized void removeSession(String id) {
         exec("DELETE FROM message WHERE session_id=?", id);
         exec("DELETE FROM session WHERE id=?", id);
+    }
+
+    /** 赞/踩：同一条消息只保留最后一次评价（先删后插）。 */
+    public synchronized void setFeedback(String messageId, String sessionId, int rating, String note) {
+        exec("DELETE FROM feedback WHERE message_id=?", messageId);
+        exec("INSERT INTO feedback(message_id,session_id,rating,note,created_at) VALUES(?,?,?,?,?)",
+                messageId, sessionId, rating, note,
+                java.time.LocalDateTime.now().withNano(0).toString());
+    }
+
+    /** 反馈列表：带上回答正文与会话标题，便于直接看 badcase。 */
+    public synchronized List<Map<String, Object>> listFeedback(int limit, Integer rating) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        String sql = "SELECT f.message_id, f.session_id, f.rating, f.note, f.created_at, "
+                + "IFNULL(m.content,''), IFNULL(s.title,'') FROM feedback f "
+                + "LEFT JOIN message m ON m.id = f.message_id "
+                + "LEFT JOIN session s ON s.id = f.session_id "
+                + (rating == null ? "" : "WHERE f.rating = ? ")
+                + "ORDER BY f.created_at DESC, f.rowid DESC LIMIT ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            int i = 1;
+            if (rating != null) ps.setInt(i++, rating);
+            ps.setInt(i, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("messageId", rs.getString(1));
+                    m.put("sessionId", rs.getString(2));
+                    m.put("rating", rs.getInt(3));
+                    m.put("note", rs.getString(4));
+                    m.put("createdAt", rs.getString(5));
+                    m.put("content", rs.getString(6));
+                    m.put("sessionTitle", rs.getString(7));
+                    out.add(m);
+                }
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        return out;
     }
 
     public synchronized List<Map<String, Object>> getMessages(String sessionId) {

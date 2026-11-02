@@ -2,6 +2,7 @@
 import { ref, reactive, computed, nextTick, onMounted } from 'vue'
 import { api, askSse, downloadText } from '../api'
 import { preview } from '../store/preview'
+import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft } from '@element-plus/icons-vue'
@@ -10,6 +11,26 @@ const sessions = ref([])
 const currentId = ref('')
 const messages = ref([]) // {role, content, sources?}
 const question = ref('')
+const askInputRef = ref(null)
+const upInput = ref(null)
+const uploading = ref(false)
+const topK = ref(5)              // 送进上下文的片段数
+const styleMode = ref('normal')  // brief | normal | detail
+
+const STYLES = [
+  { v: 'brief', l: '简洁' },
+  { v: 'normal', l: '标准' },
+  { v: 'detail', l: '详细' },
+]
+
+/** 常用指令：点一下填进输入框，不直接发送，避免误触 */
+const QUICK_PROMPTS = [
+  { label: '总结关键节点', q: '把这个流程的关键节点总结成 5 条，按先后顺序排列' },
+  { label: '上线审批清单', q: '列出上线前需要完成的审批清单，按先后顺序' },
+  { label: '需求变更点', q: '相比上一版，这份需求有哪些变更点？' },
+  { label: '各环节责任人', q: '这个流程里各环节的责任人/角色分别是谁？' },
+  { label: '驳回后怎么处理', q: '如果某个审批环节被驳回，应该怎么处理？' },
+]
 const generating = ref(false)
 const follow = ref(true)
 const chatEl = ref(null)
@@ -50,6 +71,9 @@ const lockedAgent = computed(() => {
   return s?.agentId ? agentOf(s.agentId) : null
 })
 /** 范围条显示「全部」，内部空串表示不过滤 */
+/** 操作条上显示的检索范围文案 */
+const scopeLabel = computed(() => (activeFolder.value ? activeFolder.value : '全部'))
+
 const scopeValue = computed({
   get: () => activeFolder.value || '全部',
   set: (v) => { activeFolder.value = v === '全部' ? '' : v },
@@ -147,7 +171,6 @@ const filteredArchived = computed(() => {
   const k = sessQ.value.trim()
   return archivedList.value.filter((s) => !k || s.title.includes(k))
 })
-const scopeOptions = computed(() => ['全部', ...folders.value])
 const activeProvider = () => settings.value?.providers?.find((p) => p.name === settings.value?.activeChat)
 
 function pickProvider(name) {
@@ -247,13 +270,25 @@ async function ask(qOverride) {
 
   abortCtl = new AbortController()
   askSse(
-    { question: q, folder: activeFolder.value, sessionId: currentId.value, agentId: agentId.value },
+    {
+      question: q, folder: activeFolder.value, sessionId: currentId.value,
+      agentId: agentId.value, topK: topK.value, style: styleMode.value,
+    },
     (text) => { ans.content += text; scrollBottom() },
     async (done) => {
       generating.value = false
       abortCtl = null
       ans.sources = done.sources
       currentId.value = done.sessionId
+      // 取回落库后的消息 id，点赞/踩要用
+      try {
+        const saved = await api.get('/api/sessions/' + done.sessionId)
+        const last = saved[saved.length - 1]
+        if (last && last.role === 'assistant') {
+          ans.id = last.id
+          ans.content = last.content
+        }
+      } catch (e) { /* ignore */ }
       await reloadSessions()
       scrollBottom()
     },
@@ -309,6 +344,76 @@ function scrollBottom() {
 function onEnter(e) {
   if (e.isComposing || e.keyCode === 229) return
   ask()
+}
+
+function focusAsk() {
+  nextTick(() => askInputRef.value?.focus?.())
+}
+
+function onPromptCmd(q) {
+  question.value = q
+  focusAsk()
+}
+
+function onPlusCmd(cmd) {
+  if (cmd === 'upload') upInput.value?.click()
+  else if (cmd === 'clear') { question.value = ''; focusAsk() }
+}
+
+/** 上传文档到当前智能体所属知识库，随后触发增量构建并轮询结果 */
+async function onUpload(e) {
+  const f = e.target.files?.[0]
+  e.target.value = ''
+  if (!f) return
+  const kb = agentKbId()
+  uploading.value = true
+  try {
+    const res = await fetch('/api/kb/' + kb + '/upload?name=' + encodeURIComponent(f.name), {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f,
+    }).then((r) => r.json())
+    if (!res.ok) { ElMessage.error(res.error || '上传失败'); return }
+    ElMessage.info('已上传，正在建索引…')
+    await api.post('/api/index/rebuild?kbId=' + kb, {})
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 1500))
+      const st = await api.get('/api/index/status?kbId=' + kb)
+      if (st.live?.phase === 'awaiting_confirm') {
+        ElMessage.warning('索引在等你确认向量化，请到「知识库」页处理后再提问')
+        break
+      }
+      if (!st.running) {
+        ElMessage.success('「' + f.name + '」已加入知识库，可以直接提问了')
+        break
+      }
+    }
+  } catch (err) {
+    ElMessage.error('上传失败：' + (err.message || err))
+  } finally {
+    uploading.value = false
+  }
+}
+
+/** 赞/踩：同一条只保留最后一次；踩的时候顺带收一句备注 */
+async function rate(m, val) {
+  if (!m.id) return
+  const next = m.feedback === val ? 0 : val
+  let note = ''
+  if (next === -1) {
+    try {
+      const { value } = await ElMessageBox.prompt('哪里不对？写一句，方便后面调优（可留空）', '反馈问题', {
+        inputPlaceholder: '例如：答案漏了审批环节',
+        confirmButtonText: '提交', cancelButtonText: '跳过备注',
+      })
+      note = value || ''
+    } catch (e) { /* 跳过备注也照常记录 */ }
+  }
+  try {
+    await api.post('/api/feedback', { messageId: m.id, sessionId: currentId.value, rating: next, note })
+    m.feedback = next === 0 ? null : next
+    ElMessage.success(next === 0 ? '已取消评价' : '感谢反馈')
+  } catch (e) {
+    ElMessage.error('反馈失败：' + (e.message || e))
+  }
 }
 
 function openSource(src) {
@@ -437,6 +542,14 @@ function onBodyClick(e, m) {
                 <el-button link size="small" @click="copyAns(m)">复制</el-button>
                 <el-button link size="small" @click="regen()">重新生成</el-button>
                 <el-button v-if="m.sources" link size="small" @click="exportMd">导出 MD</el-button>
+                <span v-if="m.id" class="rate">
+                  <el-tooltip content="回答准确" placement="top">
+                    <span class="thumb" :class="{ on: m.feedback === 1 }" @click="rate(m, 1)">👍</span>
+                  </el-tooltip>
+                  <el-tooltip content="答得不对" placement="top">
+                    <span class="thumb" :class="{ bad: m.feedback === -1 }" @click="rate(m, -1)">👎</span>
+                  </el-tooltip>
+                </span>
               </div>
             </template>
             <div class="body" v-html="renderAns(m)" @click="onBodyClick($event, m)"></div>
@@ -455,23 +568,83 @@ function onBodyClick(e, m) {
         <el-text size="small" type="warning">还没有智能体，先新建一个再提问</el-text>
         <el-button size="small" type="primary" @click="openAgentDialog(null)">＋ 新建智能体</el-button>
       </div>
-      <div v-else class="scope">
-        <el-text size="small" type="info">检索范围 · {{ currentKbName }}</el-text>
-        <el-segmented v-model="scopeValue" :options="scopeOptions" size="small" />
+      <div v-else-if="lockedAgent || kbMissing" class="scope">
         <el-text v-if="lockedAgent" size="small" type="info" class="scope-hint">
-          跟随智能体「{{ lockedAgent.name }}」
+          跟随智能体「{{ lockedAgent.name }}」· 知识库「{{ currentKbName }}」
         </el-text>
         <el-text v-if="kbMissing" size="small" type="danger">
           所属知识库已被删除，请到「知识库」页重建，或编辑智能体改绑
         </el-text>
       </div>
-      <div class="askbar">
-        <el-input v-model="question" type="textarea" :rows="1" :autosize="{ minRows: 1, maxRows: 6 }"
+
+      <!-- 输入区：输入框 + 底部操作条 -->
+      <div class="composer">
+        <el-input ref="askInputRef" v-model="question" class="askinput" type="textarea"
+                  :autosize="{ minRows: 3, maxRows: 10 }"
                   placeholder="向知识库提问，Enter 发送，Shift+Enter 换行…"
                   @keydown.enter.exact.prevent="onEnter" />
-        <el-button circle :type="generating ? 'info' : 'primary'" :disabled="!agentList.length && !generating"
-                   @click="generating ? stopGen() : ask()">{{ generating ? '■' : '↑' }}</el-button>
+        <div class="bar">
+          <el-dropdown trigger="click" @command="onPlusCmd">
+            <span class="chip" :class="{ busy: uploading }">
+              <el-icon><Plus /></el-icon>{{ uploading ? '上传中…' : '附件' }}
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="upload">上传文档到知识库</el-dropdown-item>
+                <el-dropdown-item command="clear">清空输入</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <el-dropdown trigger="click" @command="onPromptCmd">
+            <span class="chip">常用指令</span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="(p, i) in QUICK_PROMPTS" :key="i" :command="p.q">
+                  {{ p.label }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <el-dropdown trigger="click" @command="(v) => (activeFolder = v)">
+            <span class="chip" :title="'检索范围 · ' + currentKbName">范围：{{ scopeLabel }}</span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="">全部</el-dropdown-item>
+                <el-dropdown-item v-for="f in folders" :key="f" :command="f">{{ f }}</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <el-dropdown trigger="click" @command="(v) => (topK = v)">
+            <span class="chip">片段 {{ topK }}</span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item :command="3">3 条（更聚焦）</el-dropdown-item>
+                <el-dropdown-item :command="5">5 条（默认）</el-dropdown-item>
+                <el-dropdown-item :command="8">8 条（更全面）</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <el-dropdown trigger="click" @command="(v) => (styleMode = v)">
+            <span class="chip">{{ STYLES.find((x) => x.v === styleMode)?.l || '标准' }}</span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="st in STYLES" :key="st.v" :command="st.v">{{ st.l }}</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <span class="grow"></span>
+          <span v-if="question.length" class="cnt">{{ question.length }}</span>
+          <el-button class="send" circle :type="generating ? 'info' : 'primary'"
+                     :disabled="!agentList.length && !generating"
+                     @click="generating ? stopGen() : ask()">{{ generating ? '■' : '↑' }}</el-button>
+        </div>
       </div>
+      <input ref="upInput" type="file" hidden @change="onUpload" />
     </el-main>
 
     <PreviewDrawer :target="preview" :kb-id="agentKbId()" @close="preview.open = false" />
@@ -586,6 +759,11 @@ function onBodyClick(e, m) {
 .body :deep(img){max-width:100%}
 .body :deep(*){scrollbar-width:none}
 .body :deep(*)::-webkit-scrollbar{display:none}
+.rate{display:inline-flex;gap:4px;margin-left:6px}
+.rate .thumb{font-size:13px;line-height:1;cursor:pointer;opacity:.45;filter:grayscale(1);transition:all var(--t-fast) var(--ease)}
+.rate .thumb:hover{opacity:.9;filter:none}
+.rate .thumb.on{opacity:1;filter:none;transform:scale(1.12)}
+.rate .thumb.bad{opacity:1;filter:none}
 .srcrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed var(--line-soft)}
 .src{cursor:pointer;font-family:var(--sans);--el-tag-bg-color:var(--paper)}
 .thinking{display:flex;align-items:center;gap:6px;color:var(--ink3);font-size:var(--fs-xs);padding:4px 0}
@@ -593,11 +771,24 @@ function onBodyClick(e, m) {
 .thinking span:nth-child(2){animation-delay:.2s}
 .thinking span:nth-child(3){animation-delay:.4s}
 @keyframes pulse{0%,100%{opacity:.25;transform:scale(.85)}50%{opacity:1;transform:scale(1)}}
-.askbar{display:flex;align-items:flex-end;gap:10px;padding:10px var(--page-x) 18px;background:var(--paper)}
-.askbar :deep(.el-textarea__inner){border-radius:var(--radius-lg);padding:9px 14px;box-shadow:var(--shadow-lift)}
-.askbar :deep(.el-textarea__inner:focus){box-shadow:0 0 0 3px rgba(62,78,200,.10)}
-.askbar .el-button{height:40px;width:40px}
-.scope{display:flex;align-items:center;gap:8px;padding:0 var(--page-x) 6px;flex-wrap:wrap;background:var(--paper)}
+/* 输入区：一个带边框的卡片，上面写作、下面一排操作 */
+.composer{margin:0 var(--page-x) 16px;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--radius-lg);padding:10px 12px 9px;transition:border-color var(--t-fast) var(--ease),box-shadow var(--t-fast) var(--ease)}
+.composer:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(62,78,200,.10)}
+.askinput :deep(.el-textarea__inner){border:0;box-shadow:none;background:transparent;resize:none;
+  padding:4px 4px 10px;font-size:var(--fs-base);line-height:1.75;min-height:88px}
+.askinput :deep(.el-textarea__inner:focus){box-shadow:none}
+.bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 9px;border-radius:8px;
+  border:1px solid var(--line);background:var(--paper);color:var(--ink2);font-size:var(--fs-xs);
+  cursor:pointer;user-select:none;white-space:nowrap;transition:all var(--t-fast) var(--ease)}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.chip.busy{opacity:.6;pointer-events:none}
+.chip .el-icon{font-size:13px}
+.bar .grow{flex:1}
+.bar .cnt{font-size:var(--fs-2xs);color:var(--ink3);font-variant-numeric:tabular-nums}
+.bar .send{width:34px;height:34px;margin-left:2px}
+.scope{display:flex;align-items:center;gap:8px;padding:0 var(--page-x) 8px;flex-wrap:wrap;background:var(--paper)}
 .newagent{width:100%;margin-bottom:4px}
 .sess .lab.gh .gdot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
 .sess .lab.gh .gedit{margin-left:auto;color:var(--ink3);cursor:pointer}

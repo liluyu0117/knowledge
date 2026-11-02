@@ -30,18 +30,23 @@ public class ChatService {
     private final OpenAiCompatClient llm;
     private final ChatStore chat;
     private final kbapp.agent.AgentRegistry agents;
+    private final kbapp.usage.UsageStats usage;
 
     public ChatService(ConfigService config, HybridSearchService search,
-                       OpenAiCompatClient llm, ChatStore chat, kbapp.agent.AgentRegistry agents) {
+                       OpenAiCompatClient llm, ChatStore chat, kbapp.agent.AgentRegistry agents,
+                       kbapp.usage.UsageStats usage) {
         this.config = config;
         this.search = search;
         this.llm = llm;
         this.chat = chat;
         this.agents = agents;
+        this.usage = usage;
     }
 
     /** agentId 可为空：为空时用全局 activeChat + 默认知识库。 */
-    public Flux<AskEvent> ask(String question, String folder, String sessionId, String providerName, String agentId) {
+    public Flux<AskEvent> ask(String question, String folder, String sessionId, String providerName, String agentId,
+                              Integer topK, String style) {
+        usage.inc("ask");
         AppConfig cfg = config.get();
         String chatProvider = providerName;
         String chatModel = null;
@@ -92,8 +97,10 @@ public class ChatService {
 
         // 检索
         List<SearchHit> hits;
+        HybridSearchService.Result found;
         try {
-            hits = search.search(question, null, folder, null, true, kbId).hits();
+            found = search.search(question, topK, folder, null, true, kbId);
+            hits = found.hits();
         } catch (Exception e) {
             log.warn("检索失败", e);
             String msg = String.valueOf(e.getMessage());
@@ -105,11 +112,24 @@ public class ChatService {
             return Flux.just(new AskEvent.Error("检索失败: " + msg));
         }
 
+        // 无答案兜底：命中被阈值全部过滤（或本来就没命中）时不调 LLM，直接给出可操作的提示
+        if (hits.isEmpty()) {
+            String msg = found.dropped() > 0
+                    ? "检索到 " + found.dropped() + " 个片段，但相关度都低于阈值，已忽略。\n\n"
+                      + "可以换个更具体的问法，或到「调参」页把「相似度阈值」调低一些再试。"
+                    : "知识库中没有检索到相关内容。\n\n"
+                      + "可以确认这份文档是否已加入知识库并完成索引，或换一个更贴近文档原话的问法。";
+            chat.appendMessage(finalSid, "user", question, null, null);
+            chat.appendMessage(finalSid, "assistant", msg, List.of(), model);
+            return Flux.just(new AskEvent.Delta(msg), new AskEvent.Done(finalSid, msg, List.of(), model));
+        }
+
         // 组装消息
         List<ChatMessage> messages = new ArrayList<>();
+        String styleClause = RagContextBuilder.styleClause(style);
         messages.add(ChatMessage.system(agent != null
-                ? RagContextBuilder.systemPrompt(agent.name(), agent.description(), agent.systemPrompt())
-                : RagContextBuilder.SYSTEM_PROMPT));
+                ? RagContextBuilder.systemPrompt(agent.name(), agent.description(), agent.systemPrompt()) + styleClause
+                : RagContextBuilder.SYSTEM_PROMPT + styleClause));
         String context = RagContextBuilder.buildContext(hits);
         if (!context.isEmpty()) {
             messages.add(ChatMessage.user("知识库片段：\n\n" + context));

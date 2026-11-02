@@ -27,6 +27,16 @@ public final class RagContextBuilder {
                 + "4. 引用片段时保留其原有术语与数字，不要改写数值。";
     }
 
+    /** 输入框下方的「回答风格」：brief 简洁 / detail 详细 / 其它为标准。 */
+    public static String styleClause(String style) {
+        if (style == null) return "";
+        return switch (style) {
+            case "brief" -> "\n5. 回答尽量简短：先给结论，再用不超过 3 条要点展开，总长度控制在 200 字以内。";
+            case "detail" -> "\n5. 回答可以详细展开：先给结论，再分点说明依据、执行步骤与注意事项。";
+            default -> "";
+        };
+    }
+
     private RagContextBuilder() {}
 
     public static String buildContext(List<SearchHit> hits) {

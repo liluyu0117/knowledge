@@ -16,6 +16,8 @@ public class AppConfig {
     private IndexCfg index = new IndexCfg();
     private Guard guard = new Guard();
     private Mcp mcp = new Mcp();
+    private Rerank rerank = new Rerank();
+    private Api api = new Api();
     private Sync sync = new Sync();
 
     public static class Provider {
@@ -53,6 +55,10 @@ public class AppConfig {
         private int rrfK = 60;
         private int maxPerDoc = 3;
         private String analyzer = "smart"; // smart | bigram
+        /** rerank 分数阈值（0~1）：低于它的块直接丢弃。 */
+        private double minRerankScore = 0.05;
+        /** 未启用 rerank 时的相对阈值：低于「最高分 × 该比例」的块丢弃。 */
+        private double minRelScore = 0.25;
 
         public int getTopK() { return topK; }
         public void setTopK(int topK) { this.topK = topK; }
@@ -64,10 +70,27 @@ public class AppConfig {
         public void setMaxPerDoc(int maxPerDoc) { this.maxPerDoc = maxPerDoc; }
         public String getAnalyzer() { return analyzer; }
         public void setAnalyzer(String analyzer) { this.analyzer = analyzer; }
+        public double getMinRerankScore() { return minRerankScore; }
+        public void setMinRerankScore(double minRerankScore) { this.minRerankScore = minRerankScore; }
+        public double getMinRelScore() { return minRelScore; }
+        public void setMinRelScore(double minRelScore) { this.minRelScore = minRelScore; }
+    }
+
+    /** 对外 REST 接口（/api/v1/*），用 X-API-Key 保护。 */
+    public static class Api {
+        private boolean enabled = false;
+        private String key = "";
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getKey() { return key; }
+        public void setKey(String key) { this.key = key; }
     }
 
     public static class IndexCfg {
         private int chunkChars = 500;
+        /** 自动增量重扫间隔（分钟），0 = 关闭。 */
+        private int autoMinutes = 0;
         private int chunkOverlapChars = 50;
         private int minChunkChars = 20;
 
@@ -77,6 +100,8 @@ public class AppConfig {
         public void setChunkOverlapChars(int chunkOverlapChars) { this.chunkOverlapChars = chunkOverlapChars; }
         public int getMinChunkChars() { return minChunkChars; }
         public void setMinChunkChars(int minChunkChars) { this.minChunkChars = minChunkChars; }
+        public int getAutoMinutes() { return autoMinutes; }
+        public void setAutoMinutes(int autoMinutes) { this.autoMinutes = autoMinutes; }
     }
 
     public static class Guard {
@@ -84,6 +109,38 @@ public class AppConfig {
 
         public int getEmbedThreshold() { return embedThreshold; }
         public void setEmbedThreshold(int embedThreshold) { this.embedThreshold = embedThreshold; }
+    }
+
+    /** 重排序模型：Cohere 风格的 POST {baseUrl}/rerank。 */
+    public static class Rerank {
+        private boolean enabled = false;
+        private String baseUrl = "";
+        private String apiKey = "";
+        private String model = "";
+        /** 送重排的候选块数（RRF 之后取前 N 条送模型）。 */
+        private int candidate = 20;
+        /** 重排后保留条数，0 = 用 rag.topK。 */
+        private int topN = 0;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getBaseUrl() { return baseUrl; }
+        public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
+        public String getApiKey() { return apiKey; }
+        public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+        public String getModel() { return model; }
+        public void setModel(String model) { this.model = model; }
+        public int getCandidate() { return candidate; }
+        public void setCandidate(int candidate) { this.candidate = candidate; }
+        public int getTopN() { return topN; }
+        public void setTopN(int topN) { this.topN = topN; }
+
+        public Rerank copy() {
+            Rerank r = new Rerank();
+            r.enabled = enabled; r.baseUrl = baseUrl; r.apiKey = apiKey;
+            r.model = model; r.candidate = candidate; r.topN = topN;
+            return r;
+        }
     }
 
     public static class Mcp {
@@ -144,6 +201,10 @@ public class AppConfig {
     public void setIndex(IndexCfg index) { this.index = index; }
     public Guard getGuard() { return guard; }
     public void setGuard(Guard guard) { this.guard = guard; }
+    public Api getApi() { return api; }
+    public void setApi(Api api) { this.api = api; }
+    public Rerank getRerank() { return rerank; }
+    public void setRerank(Rerank rerank) { this.rerank = rerank; }
     public Mcp getMcp() { return mcp; }
     public void setMcp(Mcp mcp) { this.mcp = mcp; }
     public Sync getSync() { return sync; }
@@ -158,6 +219,8 @@ public class AppConfig {
         c.activeChat = activeChat;
         c.activeEmbedding = activeEmbedding;
         c.rag = rag; c.index = index; c.guard = guard; c.mcp = mcp;
+        c.rerank = rerank.copy();
+        c.api = api;
         return c;
     }
 
@@ -177,6 +240,8 @@ public class AppConfig {
         m.put("index", index);
         m.put("guard", guard);
         m.put("mcp", mcp);
+        m.put("rerank", rerank);
+        m.put("api", api);
         m.put("sync", sync);
         return m;
     }
