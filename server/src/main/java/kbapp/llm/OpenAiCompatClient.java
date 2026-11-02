@@ -51,6 +51,11 @@ public class OpenAiCompatClient {
 
     /** 非流式完整回答（AI 生成提示词等短任务用）。 */
     public String complete(List<ChatMessage> messages, AppConfig.Provider p, String model) {
+        return complete(messages, p, model, 120);
+    }
+
+    /** 非流式完整回答，可指定超时秒数（图谱抽取等长输出任务用）。 */
+    public String complete(List<ChatMessage> messages, AppConfig.Provider p, String model, int timeoutSec) {
         WebClient client = WebClient.builder()
                 .baseUrl(p.getBaseUrl())
                 .defaultHeader("Authorization", "Bearer " + p.getApiKey())
@@ -64,7 +69,7 @@ public class OpenAiCompatClient {
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(Map.class)
-                .block(java.time.Duration.ofSeconds(120));
+                .block(java.time.Duration.ofSeconds(timeoutSec));
         if (resp == null || !(resp.get("choices") instanceof java.util.List<?> choices) || choices.isEmpty()
                 || !(choices.get(0) instanceof Map<?, ?> choice)
                 || !(choice.get("message") instanceof Map<?, ?> msg)) {

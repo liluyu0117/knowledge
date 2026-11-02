@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { api } from '../api'
 import { ElMessage } from 'element-plus'
 import { preview } from '../store/preview'
@@ -64,6 +64,8 @@ function reloadScope() {
   api.get('/api/kb/' + kbId.value + '/docmeta')
     .then((m) => { kbTags.value = m.ok ? (m.tags || []) : []; selTags.value = [] }).catch(() => {})
   loadFlags()
+  graphView.value = null
+  graphStatus()
 }
 
 // ── 标签过滤 ──
@@ -108,6 +110,47 @@ function loadGlossary() {
       .map((t) => t.term + (t.aliases && t.aliases.length ? '=' + t.aliases.join(',') : ''))
       .join('\n')
   }).catch(() => {})
+}
+
+// ── 知识图谱（GraphRAG 基础版）──
+const graphSt = ref({ entityCount: 0, relationCount: 0, progress: { phase: 'idle', docsDone: 0, docsTotal: 0, batchFailed: 0, error: '' } })
+const graphView = ref(null)
+const graphRunning = computed(() => ['running', 'running-other'].includes(graphSt.value.progress?.phase))
+let graphTimer = null
+
+function graphStatus() {
+  api.get('/api/graph/status?kbId=' + kbId.value).then((s) => {
+    graphSt.value = s
+    if (graphRunning.value) scheduleGraphPoll()
+  }).catch(() => {})
+}
+
+function scheduleGraphPoll() {
+  if (graphTimer) return
+  graphTimer = setInterval(() => {
+    api.get('/api/graph/status?kbId=' + kbId.value).then((s) => {
+      graphSt.value = s
+      if (!graphRunning.value) { clearInterval(graphTimer); graphTimer = null }
+    })
+  }, 2000)
+}
+
+function graphBuild() {
+  api.post('/api/graph/build', { kbId: kbId.value }).then(() => {
+    ElMessage.success('抽取已开始，按文档逐批进行')
+    graphStatus(); scheduleGraphPoll()
+  })
+}
+function graphCancel() { api.post('/api/graph/cancel', {}).then(() => graphStatus()) }
+function graphClear() {
+  api.del('/api/graph?kbId=' + kbId.value).then(() => {
+    graphView.value = null
+    ElMessage.success('已清空')
+    graphStatus()
+  })
+}
+function loadGraph() {
+  api.get('/api/graph/view?kbId=' + kbId.value).then((v) => { graphView.value = v })
 }
 
 /** 每行「术语=别名1,别名2」→ 接口结构 */
@@ -268,6 +311,50 @@ function evRowClass({ row }) {
       </el-collapse-item>
     </el-collapse>
 
+    <!-- 知识图谱（GraphRAG 基础版） -->
+    <el-collapse class="glo">
+      <el-collapse-item name="graph">
+        <template #title>
+          <span class="fl">知识图谱 · {{ graphSt.entityCount }} 实体 / {{ graphSt.relationCount }} 关系
+            <span class="glo-tip">用 LLM 从文档抽取实体与关系；检索时问句命中实体会自动补关联实体名</span>
+          </span>
+        </template>
+        <div class="glo-bar">
+          <el-button size="small" type="primary" :disabled="graphRunning" @click="graphBuild">
+            {{ graphRunning ? `抽取中 ${graphSt.progress.docsDone}/${graphSt.progress.docsTotal}` : (graphSt.entityCount ? '增量抽取' : '开始抽取') }}
+          </el-button>
+          <el-button size="small" v-if="graphRunning" @click="graphCancel">停止</el-button>
+          <el-button size="small" :disabled="!graphSt.entityCount" @click="loadGraph">查看</el-button>
+          <el-popconfirm title="清空图谱并重新抽取？" @confirm="graphClear">
+            <template #reference>
+              <el-button size="small" :disabled="!graphSt.entityCount || graphRunning" type="danger" plain>清空</el-button>
+            </template>
+          </el-popconfirm>
+          <span class="hint" v-if="graphSt.progress.phase === 'done'">上次抽取完成，失败 {{ graphSt.progress.batchFailed }} 批</span>
+          <span class="hint" style="color:var(--el-color-danger)" v-if="graphSt.progress.error">{{ graphSt.progress.error }}</span>
+        </div>
+        <div class="hint" style="margin-bottom:8px">
+          抽取按文档逐批调用聊天模型（每批约 6 块），全库 46 篇约 90 次调用；会话里命中图谱实体时检索自动扩展关联词。
+        </div>
+        <template v-if="graphView">
+          <div class="qh" style="margin:4px 0 6px">实体（{{ graphView.entityTotal }}）</div>
+          <div class="tagcloud">
+            <el-tag v-for="e in graphView.entities" :key="e.name" size="small" effect="plain"
+                    :type="e.type === '系统' ? 'primary' : e.type === '流程' ? 'success' : 'info'"
+                    style="margin:0 6px 6px 0">
+              {{ e.name }}<span style="opacity:.6"> ×{{ e.mentions }}</span>
+            </el-tag>
+          </div>
+          <div class="qh" style="margin:8px 0 6px">关系（{{ graphView.relationTotal }}）</div>
+          <el-table :data="graphView.relations" size="small" style="max-width:100%" max-height="280">
+            <el-table-column prop="src" label="实体" width="180" show-overflow-tooltip />
+            <el-table-column prop="desc" label="关系" show-overflow-tooltip />
+            <el-table-column prop="dst" label="实体" width="180" show-overflow-tooltip />
+          </el-table>
+        </template>
+      </el-collapse-item>
+    </el-collapse>
+
     <!-- 检索回归评估 -->
     <div class="eval-bar">
       <el-button :disabled="busyEval" @click="runEval">{{ busyEval ? '评估中…' : '▶ 运行评估（默认 22 题）' }}</el-button>
@@ -338,6 +425,7 @@ function evRowClass({ row }) {
 .qgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding-bottom:12px}
 .qbox{border:1px solid var(--line-soft);border-radius:var(--radius-sm);padding:10px 12px;max-height:240px;overflow:auto}
 .qh{font-size:var(--fs-xs);color:var(--ink2);font-weight:600;margin-bottom:8px}
+.tagcloud{max-height:180px;overflow:auto;padding:2px 0 6px}
 .qrow{display:flex;align-items:center;gap:8px;justify-content:space-between;
   padding:5px 0;border-bottom:1px dashed var(--line-soft);font-size:var(--fs-xs)}
 .qrow:last-child{border-bottom:0}

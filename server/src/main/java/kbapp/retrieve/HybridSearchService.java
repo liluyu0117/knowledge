@@ -54,12 +54,13 @@ public class HybridSearchService {
     private final ChunkFlagStore chunkFlags;
     private final kbapp.usage.UsageStats usage;
     private final DocMetaStore docMeta;
+    private final GraphStore graphStore;
 
     public HybridSearchService(SearcherService searcherService, ConfigService config,
                                EmbeddingClient embedding, kbapp.kb.KbRegistry registry,
                                RerankClient rerank, GlossaryStore glossary,
                                ChunkFlagStore chunkFlags, kbapp.usage.UsageStats usage,
-                               DocMetaStore docMeta) {
+                               DocMetaStore docMeta, GraphStore graphStore) {
         this.searcherService = searcherService;
         this.config = config;
         this.embedding = embedding;
@@ -69,6 +70,7 @@ public class HybridSearchService {
         this.chunkFlags = chunkFlags;
         this.usage = usage;
         this.docMeta = docMeta;
+        this.graphStore = graphStore;
     }
 
     public record Result(List<SearchHit> hits, int candidatesKw, int candidatesVec, boolean vectorUsed,
@@ -126,6 +128,11 @@ public class HybridSearchService {
                 ? Math.max(k, Math.max(1, cfg.getRerank().getCandidate()))
                 : Math.max(k, cand);
         List<String> expanded = glossary.expand(query);
+        // 知识图谱扩展：问句命中实体时补关联实体名（GraphStore 为空图时自动跳过）
+        List<String> graphTerms = graphStore.expand(kb.id(), query);
+        if (!graphTerms.isEmpty()) {
+            for (String t : graphTerms) if (!expanded.contains(t)) expanded.add(t);
+        }
 
         try (Analyzer analyzer = AnalyzerFactory.create(cfg.getRag().getAnalyzer())) {
             SearcherManager mgr = searcherService.manager(indexDir);
