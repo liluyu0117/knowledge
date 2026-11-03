@@ -269,16 +269,30 @@ function removeSession(s) {
   }).catch(() => {})
 }
 
-async function ask(qOverride) {
+async function ask(qOverride, opts = {}) {
   const q = (qOverride ?? question.value).trim()
   if (!q || generating.value) return
   if (qOverride === undefined) question.value = ''
   generating.value = true
   follow.value = true
-  messages.value.push({ role: 'user', content: q })
-  const ans = reactive({ role: 'assistant', content: '', sources: null, error: null, stopped: false })
+  // regen 复用已有提问，不再重复入栈
+  if (!opts.skipUser) messages.value.push({ role: 'user', content: q })
+  const ans = reactive({ role: 'assistant', content: '', raw: '', sources: null, error: null, stopped: false, uid: 'a' + Date.now() })
   messages.value.push(ans)
   await nextTick(); scrollBottom()
+
+  // 流式降频：chunk 先进 raw，每 100ms 同步到 content 触发一次渲染（长回答不再逐字卡顿）
+  let flushTimer = null
+  const flushNow = () => {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+    ans.content = ans.raw
+  }
+  const onChunk = (text) => {
+    ans.raw += text
+    if (!flushTimer) {
+      flushTimer = setTimeout(() => { flushTimer = null; ans.content = ans.raw; scheduleScroll() }, 100)
+    }
+  }
 
   abortCtl = new AbortController()
   askSse(
@@ -287,10 +301,11 @@ async function ask(qOverride) {
       agentId: agentId.value, topK: topK.value, style: styleMode.value,
       tags: askTags.value.length ? [...askTags.value] : undefined,
     },
-    (text) => { ans.content += text; scrollBottom() },
+    onChunk,
     async (done) => {
       generating.value = false
       abortCtl = null
+      flushNow()
       ans.sources = done.sources
       currentId.value = done.sessionId
       // 取回落库后的消息 id，点赞/踩要用
@@ -309,6 +324,7 @@ async function ask(qOverride) {
       if (String(msg).includes('abort')) return
       generating.value = false
       abortCtl = null
+      flushNow()
       ans.error = msg
       scrollBottom()
     },
@@ -320,7 +336,10 @@ function stopGen() {
   if (abortCtl) abortCtl.abort()
   generating.value = false
   const last = messages.value[messages.value.length - 1]
-  if (last?.role === 'assistant') last.stopped = true
+  if (last?.role === 'assistant') {
+    if (last.raw) last.content = last.raw   // 保留已生成的部分，不丢尾部
+    last.stopped = true
+  }
 }
 
 function copyAns(m) {
@@ -338,7 +357,7 @@ function regen() {
   while (messages.value.length && messages.value[messages.value.length - 1].role === 'assistant') {
     messages.value.pop()
   }
-  ask(q)
+  ask(q, { skipUser: true })
 }
 
 function onChatScroll() {
@@ -348,10 +367,23 @@ function onChatScroll() {
   follow.value = gap < 80
 }
 
+/** 流式期间高频调用：合并到一次 rAF，避免每个 chunk 都强制布局 */
+let scrollRaf = false
+function scheduleScroll() {
+  if (scrollRaf) return
+  scrollRaf = true
+  requestAnimationFrame(() => { scrollRaf = false; scrollBottom() })
+}
+
 function scrollBottom() {
   nextTick(() => {
     if (follow.value && chatEl.value) chatEl.value.scrollTop = chatEl.value.scrollHeight
   })
+}
+
+function jumpToBottom() {
+  follow.value = true
+  scrollBottom()
 }
 
 function onEnter(e) {
@@ -449,14 +481,33 @@ function exportMd() {
   downloadText('知识库问答.md', md)
 }
 
+/** markdown 渲染缓存：流式时同一版本只解析一次，避免每次重渲染全量解析 */
+const htmlCache = new Map()
 function renderAns(m) {
   if (!m) return ''
+  const src = m.content || ''
+  const hit = htmlCache.get(src)
+  if (hit !== undefined) return hit
   const inline = (s) => String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
     .replace(/\[(\d{1,2})\]/g, '<span class="cite" data-cite="$1">$1</span>')
-  return mdToHtml(m.content, { inline })
+  const html = mdToHtml(src, { inline })
+  if (htmlCache.size > 60) htmlCache.clear()
+  htmlCache.set(src, html)
+  return html
+}
+
+/** 底部来源合并：同一文档多个块只显示一条，块号聚在括号里 */
+function mergedSources(sources) {
+  const map = new Map()
+  for (const s of sources || []) {
+    const k = s.docPath
+    if (!map.has(k)) map.set(k, { ...s, seqs: [s.seq] })
+    else if (!map.get(k).seqs.includes(s.seq)) map.get(k).seqs.push(s.seq)
+  }
+  return [...map.values()]
 }
 
 // 角标点击 → 打开对应来源预览
@@ -542,8 +593,16 @@ function onBodyClick(e, m) {
       </div>
 
       <div class="chat-scroll" ref="chatEl" @scroll="onChatScroll">
-        <el-empty v-if="!messages.length" description="向知识库提问，例如“网络类资源申请需要哪些环节？”" />
-        <template v-for="(m, i) in messages" :key="i">
+        <div v-if="!messages.length" class="empty-guide">
+          <div class="eg-h">向知识库提问，或从下面挑一个开始：</div>
+          <div class="eg-list">
+            <span v-for="(p, i) in QUICK_PROMPTS.slice(0, 4)" :key="i" class="eg" @click="ask(p.q)">
+              {{ p.label }}<i>↗</i>
+            </span>
+          </div>
+          <div class="eg-tip">回答只基于知识库内容，正文中的角标可点开原文核对</div>
+        </div>
+        <template v-for="(m, i) in messages" :key="m.uid || m.id || i">
           <el-alert v-if="m.role === 'user'" class="q" type="info" :closable="false"
                     :title="m.content.length > 60 ? m.content.slice(0, 60) + '…' : m.content"
                     :description="m.content.length > 60 ? m.content : undefined" />
@@ -553,8 +612,6 @@ function onBodyClick(e, m) {
                 <el-text size="small" type="info">{{ m.sources ? `基于 ${m.sources.length} 个知识库片段` : '回答' }}</el-text>
                 <el-tag v-if="m.stopped" size="small" type="warning" effect="plain">已停止</el-tag>
                 <el-button link size="small" @click="copyAns(m)">复制</el-button>
-                <el-button link size="small" @click="regen()">重新生成</el-button>
-                <el-button v-if="m.sources" link size="small" @click="exportMd">导出 MD</el-button>
                 <span v-if="m.id" class="rate">
                   <el-tooltip content="回答准确" placement="top">
                     <span class="thumb" :class="{ on: m.feedback === 1 }" @click="rate(m, 1)">👍</span>
@@ -563,6 +620,11 @@ function onBodyClick(e, m) {
                     <span class="thumb" :class="{ bad: m.feedback === -1 }" @click="rate(m, -1)">👎</span>
                   </el-tooltip>
                 </span>
+                <!-- 低频操作：悬停卡片才出现，减少长会话噪音 -->
+                <span class="act-more">
+                  <el-button link size="small" @click="regen()">重新生成</el-button>
+                  <el-button v-if="m.sources" link size="small" @click="exportMd">导出 MD</el-button>
+                </span>
               </div>
             </template>
             <div class="body" v-html="renderAns(m)" @click="onBodyClick($event, m)"></div>
@@ -570,12 +632,16 @@ function onBodyClick(e, m) {
             <el-alert v-if="m.error" type="error" :closable="false" :title="m.error" />
             <div v-if="m.sources?.length" class="srcrow">
               <el-text size="small" type="info">来源：</el-text>
-              <el-tag v-for="(s, j) in m.sources" :key="j" class="src" effect="plain"
-                      @click="openSource(s)">{{ j + 1 }}. {{ s.docTitle }}</el-tag>
+              <el-tag v-for="(s, j) in mergedSources(m.sources)" :key="j" class="src" effect="plain"
+                      @click="openSource(s)">
+                {{ j + 1 }}. {{ s.docTitle }}<span v-if="s.seqs.length > 1" class="srcseq">（{{ s.seqs.length }} 块）</span>
+              </el-tag>
             </div>
           </el-card>
         </template>
       </div>
+      <el-button v-if="!follow && messages.length" class="to-bottom" circle size="small"
+                 title="回到最新" @click="jumpToBottom">↓</el-button>
 
       <div v-if="!agentList.length" class="scope">
         <el-text size="small" type="warning">还没有智能体，先新建一个再提问</el-text>
@@ -757,6 +823,23 @@ function onBodyClick(e, m) {
 .ans :deep(.el-card__body){padding:14px 20px 16px}
 .who{display:flex;align-items:center;gap:8px}
 .who .el-button+.el-button{margin-left:0}
+/* 重新生成/导出 MD 等低频操作：悬停卡片才出现 */
+.who .act-more{display:inline-flex;gap:8px;opacity:0;transition:opacity var(--t-fast) var(--ease)}
+.ans:hover .who .act-more{opacity:1}
+/* 滚动到底部悬浮按钮 */
+.to-bottom{position:absolute;right:calc(var(--page-x) + 24px);bottom:150px;z-index:6;
+  box-shadow:0 4px 14px rgba(20,24,38,.14)}
+/* 空态引导 */
+.empty-guide{margin:auto;text-align:center;max-width:560px;padding:40px 0}
+.eg-h{font-size:var(--fs-base);color:var(--ink2);margin-bottom:14px}
+.eg-list{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+.eg{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border:1px solid var(--line);
+  border-radius:10px;background:var(--card);color:var(--ink);font-size:var(--fs-sm);cursor:pointer;
+  transition:all var(--t-fast) var(--ease)}
+.eg i{font-style:normal;color:var(--accent);opacity:.5;font-size:12px}
+.eg:hover{border-color:var(--accent);color:var(--accent);transform:translateY(-1px);box-shadow:0 4px 12px rgba(62,78,200,.10)}
+.eg-tip{margin-top:16px;font-size:var(--fs-2xs);color:var(--ink3)}
+.srcseq{opacity:.6;font-size:var(--fs-2xs)}
 .ans :deep(.cite){display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 4px;
   border-radius:4px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;font-family:var(--mono);
   vertical-align:1.5px;margin:0 2px;cursor:pointer}
