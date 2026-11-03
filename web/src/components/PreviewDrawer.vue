@@ -138,10 +138,19 @@ async function renderPdf() {
   }
 }
 
-function openRaw() {
-  api.get('/api/doc/open?path=' + encodeURIComponent(props.target?.docPath || '') + '&kbId=' + props.kbId)
-    .then((r) => { if (!r.ok) window.open('/api/doc/raw?path=' + encodeURIComponent(props.target?.docPath || '') + '&kbId=' + props.kbId) })
-    .catch(() => window.open('/api/doc/raw?path=' + encodeURIComponent(props.target?.docPath || '') + '&kbId=' + props.kbId))
+const openingRaw = ref(false)
+async function openRaw() {
+  if (openingRaw.value) return
+  const q = 'path=' + encodeURIComponent(props.target?.docPath || '') + '&kbId=' + props.kbId
+  openingRaw.value = true
+  try {
+    const r = await api.get('/api/doc/open?' + q)
+    if (!r.ok) window.open('/api/doc/raw?' + q)
+  } catch (e) {
+    window.open('/api/doc/raw?' + q)
+  } finally {
+    openingRaw.value = false
+  }
 }
 
 const codeHtml = computed(() => {
@@ -263,7 +272,7 @@ async function loadHits() {
       <el-tab-pane label="命中片段" name="hits" />
     </el-tabs>
     <div class="dw-btns">
-      <el-button size="small" @click="openRaw">打开原文件</el-button>
+      <el-button size="small" :loading="openingRaw" @click="openRaw">打开原文件</el-button>
     </div>
 
     <div v-if="target?.seq != null" class="locate">

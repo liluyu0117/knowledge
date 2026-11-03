@@ -25,24 +25,48 @@ async function loadFlags() {
   flags.value = await api.get('/api/chunk-flags?kbId=' + kbId.value).catch(() => [])
 }
 
+// ── 提交类操作的忙碌态 ──
+const banningKey = ref('')       // 正在屏蔽的块
+const restoringKey = ref('')     // 正在恢复的块
+const glossarySaving = ref(false)
+const graphStarting = ref(false)
+const graphStopping = ref(false)
+const graphClearing = ref(false)
+
 async function loadFeedback() {
   feedbacks.value = await api.get('/api/feedback?rating=-1&limit=20').catch(() => [])
 }
 
 /** 把解析错/无关的块屏蔽掉，之后检索不再返回它 */
 async function disableChunk(h) {
-  await api.post('/api/chunk-flags', {
-    kbId: kbId.value, docPath: h.docPath, seq: h.seq, disabled: true, note: '检索测试中屏蔽',
-  })
-  if (r.value?.results) r.value.results = r.value.results.filter((x) => !(x.docPath === h.docPath && x.seq === h.seq))
-  await loadFlags()
-  ElMessage.success('已屏蔽该块，后续检索不再返回')
+  if (banningKey.value) return
+  banningKey.value = h.docPath + '#' + h.seq
+  try {
+    await api.post('/api/chunk-flags', {
+      kbId: kbId.value, docPath: h.docPath, seq: h.seq, disabled: true, note: '检索测试中屏蔽',
+    })
+    if (r.value?.results) r.value.results = r.value.results.filter((x) => !(x.docPath === h.docPath && x.seq === h.seq))
+    await loadFlags()
+    ElMessage.success('已屏蔽该块，后续检索不再返回')
+  } catch (e) {
+    ElMessage.error('屏蔽失败：' + (e.message || e))
+  } finally {
+    banningKey.value = ''
+  }
 }
 
 async function restoreChunk(f) {
-  await api.post('/api/chunk-flags', { kbId: kbId.value, docPath: f.docPath, seq: f.seq, disabled: false })
-  await loadFlags()
-  ElMessage.success('已恢复')
+  if (restoringKey.value) return
+  restoringKey.value = f.docPath + '#' + f.seq
+  try {
+    await api.post('/api/chunk-flags', { kbId: kbId.value, docPath: f.docPath, seq: f.seq, disabled: false })
+    await loadFlags()
+    ElMessage.success('已恢复')
+  } catch (e) {
+    ElMessage.error('恢复失败：' + (e.message || e))
+  } finally {
+    restoringKey.value = ''
+  }
 }
 
 onMounted(async () => {
@@ -135,19 +159,44 @@ function scheduleGraphPoll() {
   }, 2000)
 }
 
-function graphBuild() {
-  api.post('/api/graph/build', { kbId: kbId.value }).then(() => {
+async function graphBuild() {
+  if (graphStarting.value) return
+  graphStarting.value = true
+  try {
+    await api.post('/api/graph/build', { kbId: kbId.value })
     ElMessage.success('抽取已开始，按文档逐批进行')
     graphStatus(); scheduleGraphPoll()
-  })
+  } catch (e) {
+    ElMessage.error('启动失败：' + (e.message || e))
+  } finally {
+    graphStarting.value = false
+  }
 }
-function graphCancel() { api.post('/api/graph/cancel', {}).then(() => graphStatus()) }
-function graphClear() {
-  api.del('/api/graph?kbId=' + kbId.value).then(() => {
+async function graphCancel() {
+  if (graphStopping.value) return
+  graphStopping.value = true
+  try {
+    await api.post('/api/graph/cancel', {})
+    graphStatus()
+  } catch (e) {
+    ElMessage.error('取消失败：' + (e.message || e))
+  } finally {
+    graphStopping.value = false
+  }
+}
+async function graphClear() {
+  if (graphClearing.value) return
+  graphClearing.value = true
+  try {
+    await api.del('/api/graph?kbId=' + kbId.value)
     graphView.value = null
     ElMessage.success('已清空')
     graphStatus()
-  })
+  } catch (e) {
+    ElMessage.error('清空失败：' + (e.message || e))
+  } finally {
+    graphClearing.value = false
+  }
 }
 function loadGraph() {
   api.get('/api/graph/view?kbId=' + kbId.value).then((v) => { graphView.value = v })
@@ -169,10 +218,18 @@ function parseGlossary(text) {
 }
 
 async function saveGlossary() {
-  const terms = parseGlossary(glossaryText.value)
-  await api.putJson('/api/glossary', { terms })
-  glossaryCount.value = terms.length
-  ElMessage.success('术语表已保存（' + terms.length + ' 条），下次检索生效')
+  if (glossarySaving.value) return
+  glossarySaving.value = true
+  try {
+    const terms = parseGlossary(glossaryText.value)
+    await api.putJson('/api/glossary', { terms })
+    glossaryCount.value = terms.length
+    ElMessage.success('术语表已保存（' + terms.length + ' 条），下次检索生效')
+  } catch (e) {
+    ElMessage.error('保存失败：' + (e.message || e))
+  } finally {
+    glossarySaving.value = false
+  }
 }
 
 function evRowClass({ row }) {
@@ -276,7 +333,7 @@ function evRowClass({ row }) {
                   placeholder="每行一条，格式：术语=别名1,别名2&#10;运管=运营管理,运管平台&#10;会签=会签流程,多级会签" />
         <div class="glo-bar">
           <span class="hint">例：`两翼=两翼系统`、`上线方案=上线计划,投产方案`</span>
-          <el-button size="small" type="primary" @click="saveGlossary">保存术语表</el-button>
+          <el-button size="small" type="primary" :loading="glossarySaving" @click="saveGlossary">保存术语表</el-button>
         </div>
       </el-collapse-item>
     </el-collapse>
@@ -293,7 +350,7 @@ function evRowClass({ row }) {
             <div v-if="!flags.length" class="hint">还没有屏蔽任何块。检索结果右上角的 🚫 可以一键屏蔽。</div>
             <div v-for="(f, i) in flags" :key="i" class="qrow">
               <span class="qpath">{{ f.docPath }} · 块 {{ f.seq }}</span>
-              <el-button link size="small" @click="restoreChunk(f)">恢复</el-button>
+              <el-button link size="small" :loading="restoringKey === (f.docPath + '#' + f.seq)" @click="restoreChunk(f)">恢复</el-button>
             </div>
           </div>
           <div class="qbox">
@@ -320,10 +377,10 @@ function evRowClass({ row }) {
           </span>
         </template>
         <div class="glo-bar">
-          <el-button size="small" type="primary" :disabled="graphRunning" @click="graphBuild">
+          <el-button size="small" type="primary" :disabled="graphRunning" :loading="graphStarting" @click="graphBuild">
             {{ graphRunning ? `抽取中 ${graphSt.progress.docsDone}/${graphSt.progress.docsTotal}` : (graphSt.entityCount ? '增量抽取' : '开始抽取') }}
           </el-button>
-          <el-button size="small" v-if="graphRunning" @click="graphCancel">停止</el-button>
+          <el-button size="small" v-if="graphRunning" :loading="graphStopping" @click="graphCancel">停止</el-button>
           <el-button size="small" :disabled="!graphSt.entityCount" @click="loadGraph">查看</el-button>
           <el-popconfirm title="清空图谱并重新抽取？" @confirm="graphClear">
             <template #reference>
@@ -381,7 +438,7 @@ function evRowClass({ row }) {
         <b>{{ (h.rerankScore != null ? h.rerankScore : h.rrfScore).toFixed(3) }}</b>
         <span>{{ h.rerankScore != null ? 'RERANK' : 'RRF' }}</span>
         <el-tooltip content="屏蔽这个块（不再参与检索）" placement="top">
-          <span class="ban" @click.stop="disableChunk(h)">🚫</span>
+          <span class="ban" :class="{ busy: banningKey === (h.docPath + '#' + h.seq) }" @click.stop="disableChunk(h)">🚫</span>
         </el-tooltip>
       </div>
       <div>
@@ -449,4 +506,6 @@ function evRowClass({ row }) {
 .rtag.off{background:var(--mist);color:var(--ink3);border-color:transparent}
 .p{font-size:var(--fs-2xs);color:var(--ink3);margin:3px 0 7px;font-family:var(--mono)}
 .tx{font-size:var(--fs-sm);color:var(--ink2);line-height:var(--lh-loose)}
+/* 屏蔽进行中：置灰并禁用点击 */
+.ban.busy{opacity:.35;pointer-events:none}
 </style>

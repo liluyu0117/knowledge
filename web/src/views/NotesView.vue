@@ -24,6 +24,9 @@ const saveState = ref('idle')
 const lastSavedAt = ref('')
 const saveError = ref('')
 const manualSaved = ref(false)
+const creating = ref(false)    // 新建笔记前先落盘当前草稿
+const removing = ref(false)    // 删除笔记中
+const renamingId = ref('')     // 正在重命名的笔记 id
 
 const nowHM = () => new Date().toTimeString().slice(0, 8)
 
@@ -106,6 +109,8 @@ function onTitleInput() {
  * manual=false 时静默失败（只更新状态标识），不弹窗不打断输入。
  */
 async function persist(manual = false) {
+  // 防重入：草稿态连续点击会 POST 出两条重复笔记
+  if (saveState.value === 'saving') return false
   const raw = (title.value || '').trim()
   const c = content.value || ''
   if (!raw && !c.trim()) {
@@ -195,9 +200,14 @@ function onVisible() {
 
 // ── 新建：进空白编辑页，标题处就是填文件名的地方 ──
 function newNote() {
-  const go = () => resetDraft()
-  if (dirty.value) persist(false).finally(go)
-  else go()
+  if (creating.value) return
+  const go = () => { creating.value = false; resetDraft() }
+  if (dirty.value) {
+    creating.value = true
+    persist(false).finally(go)
+  } else {
+    go()
+  }
 }
 
 function resetDraft() {
@@ -213,6 +223,7 @@ function resetDraft() {
 
 // ── 重命名：弹窗改文件名，只动名字不动正文 ──
 function renameDialog(n) {
+  if (renamingId.value) return
   ElMessageBox.prompt('只改文件名，正文与类型不变', '重命名', {
     inputValue: n.title + '.' + extOf(n.type),
     confirmButtonText: '重命名',
@@ -221,6 +232,7 @@ function renameDialog(n) {
   }).then(async ({ value }) => {
     const p = parseName(value, n.id, n.type)
     if (p.error || p.base === n.title) return
+    renamingId.value = n.id
     try {
       const r = await api.patch('/api/notes/' + n.id + '/rename', { title: p.base })
       if (!r.ok) { ElMessage.error(r.error || '重命名失败'); return }
@@ -229,6 +241,8 @@ function renameDialog(n) {
       ElMessage.success('已重命名为「' + r.title + '」')
     } catch (e) {
       ElMessage.error('重命名失败：' + (e.message || e))
+    } finally {
+      renamingId.value = ''
     }
   }).catch(() => {})
 }
@@ -237,8 +251,10 @@ function remove() {
   if (!currentId.value) { ElMessage.warning('还没有创建这个笔记'); return }
   ElMessageBox.confirm(`删除笔记「${title.value || '未命名笔记'}」？`, '删除笔记', {
     type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
-  }).then(() => {
-    api.del('/api/notes/' + currentId.value).then(() => {
+  }).then(async () => {
+    removing.value = true
+    try {
+      await api.del('/api/notes/' + currentId.value)
       ElMessage.success('笔记已删除')
       currentId.value = ''
       title.value = ''
@@ -246,7 +262,11 @@ function remove() {
       dirty.value = false
       saveState.value = 'idle'
       load()
-    })
+    } catch (e) {
+      ElMessage.error('删除失败：' + (e.message || e))
+    } finally {
+      removing.value = false
+    }
   }).catch(() => {})
 }
 
@@ -298,7 +318,7 @@ const rendered = computed(() => (type.value === 'md' ? mdToHtml(content.value) :
 <template>
   <el-container class="np">
     <el-aside width="250px" class="nside">
-      <el-button type="primary" style="width:100%" @click="newNote">＋ 新建笔记</el-button>
+      <el-button type="primary" style="width:100%" :loading="creating" @click="newNote">＋ 新建笔记</el-button>
       <div class="nlist">
         <!-- 新建中的草稿行：有改动就自动保存成正式笔记 -->
         <div v-if="isDraft" class="nitem on draft">
@@ -339,10 +359,10 @@ const rendered = computed(() => (type.value === 'md' ? mdToHtml(content.value) :
         <div class="pact">
           <el-segmented v-model="type" :options="['md', 'txt', 'doc']" size="small"
                         :disabled="!isDraft" disabled-tip="类型创建后不可改" />
-          <el-button size="small" :type="dirty ? 'primary' : 'default'" @click="persist(true)">
+          <el-button size="small" :type="dirty ? 'primary' : 'default'" :loading="saveState === 'saving'" @click="persist(true)">
             {{ isDraft ? '保存为文件' : (dirty ? '保存' : '已保存') }}
           </el-button>
-          <el-button size="small" type="danger" plain :disabled="isDraft" @click="remove">删除</el-button>
+          <el-button size="small" type="danger" plain :disabled="isDraft" :loading="removing" @click="remove">删除</el-button>
         </div>
       </div>
       <div class="nbody">

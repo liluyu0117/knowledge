@@ -24,6 +24,16 @@ const mcpInfo = ref({ toolCount: 0, tools: [], sseUrl: 'http://localhost:39217/s
 const autoMinutes = ref(0)
 const apiCfg = ref({ enabled: false, key: '' })
 const usage = ref(null)
+// ── 各提交按钮的忙碌态（防重复点击 + loading 反馈）──
+const savingProviders = ref(false)
+const removingProvider = ref(false)
+const rerankSaving = ref(false)
+const apiSaving = ref(false)
+const syncSaving = ref(false)
+const syncTesting = ref(false)
+const backupStarting = ref(false)
+const restoring = ref(false)
+const usageLoading = ref(false)
 
 const syncCfg = ref({ server: '', user: '', appPassword: '', autoDaily: false })
 const syncPwd = ref('')
@@ -218,6 +228,7 @@ function validate() {
 }
 
 async function saveProviders() {
+  if (savingProviders.value) return
   if (!draft.value.length) {
     ElMessage.warning('至少保留一个厂商，否则无法问答')
     return
@@ -243,12 +254,15 @@ async function saveProviders() {
       apiKey: trim(p._key),
     })),
   }
+  savingProviders.value = true
   try {
     const s = await api.putJson('/api/settings', body)
     applySettings(s, { resetDraft: true })
     ElMessage.success(added ? `已保存（其中新增 ${added} 个厂商）` : '厂商配置已保存')
   } catch (e) {
     ElMessage.error('保存失败：' + (e.message || e))
+  } finally {
+    savingProviders.value = false
   }
 }
 
@@ -282,6 +296,7 @@ function addProvider() {
 }
 
 function removeProvider(p) {
+  if (removingProvider.value) return
   // 草稿有改动时先让用户保存或撤销，避免「删除请求把别的改动一起带走」这种模糊状态
   if (dirty.value) {
     ElMessage.warning('先保存或撤销当前修改，再删除厂商')
@@ -300,6 +315,7 @@ function removeProvider(p) {
   ElMessageBox.confirm(`删除厂商「${p.name}」？${tips.join('')}`, '删除厂商', {
     type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
   }).then(async () => {
+    removingProvider.value = true
     const body = {
       providers: others.map((x) => ({
         name: x.name, oldName: x.name,
@@ -314,6 +330,8 @@ function removeProvider(p) {
       ElMessage.success('厂商已删除')
     } catch (e) {
       ElMessage.error('删除失败：' + (e.message || e))
+    } finally {
+      removingProvider.value = false
     }
   }).catch(() => {})
 }
@@ -384,18 +402,25 @@ function useTestedDim(p) {
 }
 
 // ── 重排 ──
-function saveRerank() {
+async function saveRerank() {
+  if (rerankSaving.value) return
   const r = settings.value.rerank
-  api.putJson('/api/settings', {
-    rerank: {
-      enabled: r.enabled, baseUrl: r.baseUrl, model: r.model,
-      candidate: r.candidate, topN: r.topN, apiKey: rerankKey.value,
-    },
-  }).then((st) => {
+  rerankSaving.value = true
+  try {
+    const st = await api.putJson('/api/settings', {
+      rerank: {
+        enabled: r.enabled, baseUrl: r.baseUrl, model: r.model,
+        candidate: r.candidate, topN: r.topN, apiKey: rerankKey.value,
+      },
+    })
     applySettings(st)
     rerankKey.value = ''
     ElMessage.success('重排序配置已保存')
-  })
+  } catch (e) {
+    ElMessage.error('保存失败：' + (e.message || e))
+  } finally {
+    rerankSaving.value = false
+  }
 }
 
 async function testRerank() {
@@ -436,17 +461,32 @@ function saveChunkParams() {
     .then(() => ElMessage.success('已保存，下次构建生效（全量重建）'))
 }
 
-function loadUsage() {
-  api.get('/api/settings/usage').then((u) => { usage.value = u }).catch(() => {})
+async function loadUsage() {
+  if (usageLoading.value) return
+  usageLoading.value = true
+  try {
+    usage.value = await api.get('/api/settings/usage')
+  } catch (e) {
+    /* 静默：用量面板非关键路径 */
+  } finally {
+    usageLoading.value = false
+  }
 }
 
 // ── 开放接口 ──
-function saveApi(patch) {
-  api.putJson('/api/settings', { api: patch }).then((st) => {
+async function saveApi(patch) {
+  if (apiSaving.value) return
+  apiSaving.value = true
+  try {
+    const st = await api.putJson('/api/settings', { api: patch })
     applySettings(st)
     apiCfg.value = { ...st.api }
     ElMessage.success('已保存')
-  })
+  } catch (e) {
+    ElMessage.error('保存失败：' + (e.message || e))
+  } finally {
+    apiSaving.value = false
+  }
 }
 
 function regenKey() { saveApi({ regenerate: true }) }
@@ -457,24 +497,38 @@ function copyKey() {
 }
 
 // ── 备份 ──
-function saveSyncCfg() {
-  api.post('/api/sync/config', {
-    server: syncCfg.value.server, user: syncCfg.value.user,
-    appPassword: (syncPwd.value || '').trim(), autoDaily: syncCfg.value.autoDaily,
-  }).then((c) => {
+async function saveSyncCfg(silent = false) {
+  if (syncSaving.value) return
+  if (!silent) syncSaving.value = true
+  try {
+    const c = await api.post('/api/sync/config', {
+      server: syncCfg.value.server, user: syncCfg.value.user,
+      appPassword: (syncPwd.value || '').trim(), autoDaily: syncCfg.value.autoDaily,
+    })
     syncCfg.value = { ...c, appPassword: '' }
     if (syncPwd.value.trim()) hasSyncPwd.value = true
     syncPwd.value = ''
-    ElMessage.success('备份配置已保存')
-  })
+    if (!silent) ElMessage.success('备份配置已保存')
+  } catch (e) {
+    if (!silent) ElMessage.error('保存失败：' + (e.message || e))
+  } finally {
+    if (!silent) syncSaving.value = false
+  }
 }
 
-function testSync() {
-  saveSyncCfg()
-  api.get('/api/sync/test').then((r) => {
+async function testSync() {
+  if (syncTesting.value) return
+  syncTesting.value = true
+  try {
+    await saveSyncCfg(true)
+    const r = await api.get('/api/sync/test')
     if (r.ok) ElMessage.success('坚果云连接成功')
     else ElMessage.error(r.error || '连接失败')
-  })
+  } catch (e) {
+    ElMessage.error('连接失败：' + (e.message || e))
+  } finally {
+    syncTesting.value = false
+  }
 }
 
 function pollSync() {
@@ -492,24 +546,37 @@ function pollSync() {
   }, 600)
 }
 
-function doBackup() {
-  api.post('/api/sync/backup').then((r) => {
+async function doBackup() {
+  if (backupStarting.value) return
+  backupStarting.value = true
+  try {
+    const r = await api.post('/api/sync/backup')
     if (r.started) { syncRunning.value = true; pollSync() }
     else ElMessage.warning('已有同步任务在进行中')
-  })
+  } catch (e) {
+    ElMessage.error('备份失败：' + (e.message || e))
+  } finally {
+    backupStarting.value = false
+  }
 }
 
 function doRestore() {
+  if (restoring.value) return
   ElMessageBox.confirm('恢复将覆盖本地的会话、知识库与智能体数据（恢复前会自动做安全备份）。继续？', '从云端恢复', {
     type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消',
-  }).then(() => {
-    api.get('/api/sync/list').then((list) => {
+  }).then(async () => {
+    restoring.value = true
+    try {
+      const list = await api.get('/api/sync/list')
       const latest = (Array.isArray(list) && list.length) ? list[0].name : null
       if (!latest) { ElMessage.error('云端没有可恢复的备份'); return }
-      api.post('/api/sync/restore', { name: latest }).then((r) => {
-        if (r.started) { syncRunning.value = true; pollSync() }
-      })
-    })
+      const r = await api.post('/api/sync/restore', { name: latest })
+      if (r.started) { syncRunning.value = true; pollSync() }
+    } catch (e) {
+      ElMessage.error('恢复失败：' + (e.message || e))
+    } finally {
+      restoring.value = false
+    }
   }).catch(() => {})
 }
 
@@ -636,7 +703,7 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
               <div v-if="dirty" class="dirty">
                 <span class="dt"><i class="dot-warn"></i>{{ changedCount }} 项未保存</span>
                 <span class="dh">改动只在本页生效，保存后问答与索引才会使用</span>
-                <el-button size="small" type="primary" @click="saveProviders">保存修改</el-button>
+                <el-button size="small" type="primary" :loading="savingProviders" @click="saveProviders">保存修改</el-button>
                 <el-button size="small" @click="discard">撤销</el-button>
               </div>
 
@@ -693,7 +760,7 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
                     <div class="span2 btnline">
                       <el-button size="small" :loading="chatTest[p._uid]?.ok === null" @click="testConn(p)">测试聊天</el-button>
                       <el-button size="small" :loading="embTest[p._uid]?.ok === null" @click="testEmbedding(p)">测试向量</el-button>
-                      <el-button size="small" type="danger" plain @click="removeProvider(p)">删除</el-button>
+                      <el-button size="small" type="danger" plain :loading="removingProvider" @click="removeProvider(p)">删除</el-button>
                       <span v-if="chatTest[p._uid]?.ok === true" class="t ok">
                         ✓ 聊天连通{{ chatTest[p._uid].tookMs != null ? ` · ${chatTest[p._uid].tookMs}ms` : '' }}
                       </span>
@@ -711,7 +778,7 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
                 还没有厂商。点右上「新增厂商」填地址、模型与 Key，才能开始问答。
               </div>
               <div v-else class="card-foot">
-                <el-button size="small" type="primary" :disabled="!dirty" @click="saveProviders">保存修改</el-button>
+                <el-button size="small" type="primary" :disabled="!dirty" :loading="savingProviders" @click="saveProviders">保存修改</el-button>
                 <el-button size="small" :disabled="!dirty" @click="discard">撤销</el-button>
                 <span class="hint">
                   {{ dirty ? `有 ${changedCount} 项待保存` : '所有修改已保存' }}
@@ -756,7 +823,7 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
                 </el-form-item>
                 <div class="span2 card-foot">
                   <el-button size="small" :loading="rerankTesting" @click="testRerank">测试连通</el-button>
-                  <el-button size="small" type="primary" @click="saveRerank">保存</el-button>
+                  <el-button size="small" type="primary" :loading="rerankSaving" @click="saveRerank">保存</el-button>
                   <span v-if="rerankTest" class="t" :class="rerankTest.ok ? 'ok' : 'bad'">
                     {{ rerankTest.ok
                       ? `连通正常 · ${rerankTest.tookMs}ms · 分数 ${(rerankTest.scores || []).map((x) => x.toFixed(3)).join(' / ')}`
@@ -821,7 +888,7 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
                   <div class="sec-title">用量统计</div>
                   <div class="sec-sub">本机口径，只用于估算调用量，不做精确计费</div>
                 </div>
-                <el-button size="small" :icon="Refresh" @click="loadUsage">刷新</el-button>
+                <el-button size="small" :icon="Refresh" :loading="usageLoading" @click="loadUsage">刷新</el-button>
               </div>
               <div class="tiles">
                 <div v-for="t in usageTiles" :key="t.k" class="tile">
@@ -905,7 +972,7 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
                 <el-input :model-value="apiCfg.key" readonly size="small" style="max-width:300px"
                           :placeholder="apiCfg.key ? '' : '还没生成，点「重置」生成一个'" />
                 <el-button size="small" :disabled="!apiCfg.key" @click="copyKey">复制</el-button>
-                <el-button size="small" :disabled="!apiCfg.enabled" @click="regenKey">重置</el-button>
+                <el-button size="small" :disabled="!apiCfg.enabled" :loading="apiSaving" @click="regenKey">重置</el-button>
               </div>
               <div class="code-block">
                 <div class="cb-h">调用示例</div>
@@ -942,10 +1009,10 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
               </el-form>
 
               <div class="card-foot">
-                <el-button size="small" :disabled="syncRunning" @click="testSync">测试连接</el-button>
-                <el-button size="small" :disabled="syncRunning" @click="saveSyncCfg">保存配置</el-button>
-                <el-button size="small" type="primary" :disabled="syncRunning" @click="doBackup">立即备份</el-button>
-                <el-button size="small" :disabled="syncRunning" @click="doRestore">从云端恢复</el-button>
+                <el-button size="small" :disabled="syncRunning" :loading="syncTesting" @click="testSync">测试连接</el-button>
+                <el-button size="small" :disabled="syncRunning" :loading="syncSaving" @click="saveSyncCfg">保存配置</el-button>
+                <el-button size="small" type="primary" :disabled="syncRunning" :loading="backupStarting" @click="doBackup">立即备份</el-button>
+                <el-button size="small" :disabled="syncRunning" :loading="restoring" @click="doRestore">从云端恢复</el-button>
               </div>
 
               <div v-if="syncRunning" class="prog">

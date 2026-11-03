@@ -53,6 +53,10 @@ const agentList = ref([])
 const agentDialog = ref(false)
 const agentForm = ref({})
 const editingAgentId = ref(null)
+const agentSaving = ref(false)      // 智能体保存中
+const agentDeleting = ref(false)    // 智能体删除中
+const sessionBusyId = ref('')       // 正在重命名/归档/删除的会话
+const ratingMsgId = ref('')         // 正在提交评价的消息
 const collapsed = ref({})
 const AGENT_COLORS = ['#6366F1', '#22A06B', '#C77808', '#E5484D', '#0EA5E9', '#D946EF', '#8F949E']
 
@@ -124,7 +128,7 @@ function onAgentChange(v) {
   applyAgentScope(v)
 }
 function loadAgents() {
-  api.get('/api/agents').then((a) => { agentList.value = a })
+  return api.get('/api/agents').then((a) => { agentList.value = a })
 }
 function openAgentDialog(agent) {
   editingAgentId.value = agent?.id || null
@@ -148,33 +152,44 @@ function onAgentProviderChange(name) {
   const p = providerOf(name)
   agentForm.value.model = p?.chatModel || ''
 }
-function saveAgent() {
+async function saveAgent() {
+  if (agentSaving.value) return
   const b = agentForm.value
   if (!b.name.trim()) { ElMessage.warning('请填写智能体名称'); return }
-  const req = editingAgentId.value
-    ? api.putJson('/api/agents/' + editingAgentId.value, b)
-    : api.post('/api/agents', b)
-  req.then(() => {
+  agentSaving.value = true
+  try {
+    if (editingAgentId.value) await api.putJson('/api/agents/' + editingAgentId.value, b)
+    else await api.post('/api/agents', b)
     agentDialog.value = false
     loadAgents()
     ElMessage.success(editingAgentId.value ? '智能体已更新' : '智能体已创建')
-  })
+  } catch (e) {
+    ElMessage.error('保存失败：' + (e.message || e))
+  } finally {
+    agentSaving.value = false
+  }
 }
-function deleteAgentFromDialog() {
-  if (!editingAgentId.value) return
-  ElMessageBox.confirm(`删除智能体「${agentForm.value.name}」？其会话将转给剩余的第一个智能体。`, '删除智能体', {
-    type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
-  }).then(() => {
-    api.del('/api/agents/' + editingAgentId.value).then(() => {
-      agentDialog.value = false
-      const removed = editingAgentId.value
-      loadAgents().then(() => {
-        if (agentId.value === removed || !agentOf(agentId.value)) onAgentChange(agentList.value[0]?.id || '')
-      })
-      reloadSessions()
-      ElMessage.success('智能体已删除')
+async function deleteAgentFromDialog() {
+  if (!editingAgentId.value || agentDeleting.value) return
+  try {
+    await ElMessageBox.confirm(`删除智能体「${agentForm.value.name}」？其会话将转给剩余的第一个智能体。`, '删除智能体', {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
     })
-  }).catch(() => {})
+  } catch { return } // 用户取消
+  agentDeleting.value = true
+  try {
+    const removed = editingAgentId.value
+    await api.del('/api/agents/' + removed)
+    agentDialog.value = false
+    await loadAgents()
+    if (agentId.value === removed || !agentOf(agentId.value)) onAgentChange(agentList.value[0]?.id || '')
+    reloadSessions()
+    ElMessage.success('智能体已删除')
+  } catch (e) {
+    ElMessage.error('删除失败：' + (e.message || e))
+  } finally {
+    agentDeleting.value = false
+  }
 }
 function genPrompt() {
   const f = agentForm.value
@@ -285,17 +300,34 @@ function newSession() {
 }
 
 async function archiveSession(s, v) {
-  await api.post(`/api/sessions/${s.id}/archive?value=${v}`)
-  await reloadSessions()
+  if (sessionBusyId.value) return
+  sessionBusyId.value = s.id
+  try {
+    await api.post(`/api/sessions/${s.id}/archive?value=${v}`)
+    await reloadSessions()
+  } catch (e) {
+    ElMessage.error('操作失败：' + (e.message || e))
+  } finally {
+    sessionBusyId.value = ''
+  }
 }
 
 function renameSession(s) {
+  if (sessionBusyId.value) return
   ElMessageBox.prompt('重命名会话：', '重命名', {
     inputValue: s.title, confirmButtonText: '保存', cancelButtonText: '取消',
-  }).then(({ value }) => {
+  }).then(async ({ value }) => {
     const t = (value || '').trim()
     if (!t || t === s.title) return
-    api.post(`/api/sessions/${s.id}/rename?title=${encodeURIComponent(t)}`).then(() => reloadSessions())
+    sessionBusyId.value = s.id
+    try {
+      await api.post(`/api/sessions/${s.id}/rename?title=${encodeURIComponent(t)}`)
+      await reloadSessions()
+    } catch (e) {
+      ElMessage.error('重命名失败：' + (e.message || e))
+    } finally {
+      sessionBusyId.value = ''
+    }
   }).catch(() => {})
 }
 
@@ -307,14 +339,21 @@ function commitRename(s) {
 }
 
 function removeSession(s) {
+  if (sessionBusyId.value) return
   ElMessageBox.confirm(`删除会话「${s.title}」及其全部消息？删除后不可恢复。`, '删除会话', {
     type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
-  }).then(() => {
-    api.del(`/api/sessions/${s.id}`).then(() => {
+  }).then(async () => {
+    sessionBusyId.value = s.id
+    try {
+      await api.del(`/api/sessions/${s.id}`)
       if (currentId.value === s.id) { currentId.value = ''; messages.value = [] }
-      reloadSessions()
+      await reloadSessions()
       ElMessage.success('会话已删除')
-    })
+    } catch (e) {
+      ElMessage.error('删除失败：' + (e.message || e))
+    } finally {
+      sessionBusyId.value = ''
+    }
   }).catch(() => {})
 }
 
@@ -501,7 +540,7 @@ async function onUpload(e) {
 
 /** 赞/踩：同一条只保留最后一次；踩的时候顺带收一句备注 */
 async function rate(m, val) {
-  if (!m.id) return
+  if (!m.id || ratingMsgId.value) return
   const next = m.feedback === val ? 0 : val
   let note = ''
   if (next === -1) {
@@ -513,12 +552,15 @@ async function rate(m, val) {
       note = value || ''
     } catch (e) { /* 跳过备注也照常记录 */ }
   }
+  ratingMsgId.value = m.id
   try {
     await api.post('/api/feedback', { messageId: m.id, sessionId: currentId.value, rating: next, note })
     m.feedback = next === 0 ? null : next
     ElMessage.success(next === 0 ? '已取消评价' : '感谢反馈')
   } catch (e) {
     ElMessage.error('反馈失败：' + (e.message || e))
+  } finally {
+    ratingMsgId.value = ''
   }
 }
 
@@ -614,7 +656,7 @@ function onBodyClick(e, m) {
           <template v-if="!collapsed[g.key]">
             <div v-for="s in g.sessions" :key="s.id" class="it" :class="{ on: s.id === currentId }" @click="openSession(s.id)">
               <span class="t">{{ s.title }}</span>
-              <span class="ops">
+              <span class="ops" :class="{ busy: sessionBusyId === s.id }">
                 <el-icon @click.stop="renameSession(s)" title="重命名"><EditPen /></el-icon>
                 <el-icon @click.stop="archiveSession(s, true)" title="归档"><Collection /></el-icon>
               </span>
@@ -632,7 +674,7 @@ function onBodyClick(e, m) {
           <template v-if="showArchived">
             <div v-for="s in filteredArchived" :key="s.id" class="it" @click="openSession(s.id)">
               <span class="t">{{ s.title }}</span>
-              <span class="ops">
+              <span class="ops" :class="{ busy: sessionBusyId === s.id }">
                 <el-icon @click.stop="archiveSession(s, false)" title="恢复"><RefreshLeft /></el-icon>
                 <el-icon @click.stop="removeSession(s)" title="删除"><Delete /></el-icon>
               </span>
@@ -688,7 +730,7 @@ function onBodyClick(e, m) {
                 <el-text size="small" type="info">{{ m.sources ? `基于 ${m.sources.length} 个知识库片段` : '回答' }}</el-text>
                 <el-tag v-if="m.stopped" size="small" type="warning" effect="plain">已停止</el-tag>
                 <el-button link size="small" @click="copyAns(m)">复制</el-button>
-                <span v-if="m.id" class="rate">
+                <span v-if="m.id" class="rate" :class="{ busy: ratingMsgId === m.id }">
                   <el-tooltip content="回答准确" placement="top">
                     <el-icon class="thumb" :class="{ on: m.feedback === 1 }" @click="rate(m, 1)"><Select /></el-icon>
                   </el-tooltip>
@@ -850,9 +892,9 @@ function onBodyClick(e, m) {
       </el-form>
       <template #footer>
         <el-button v-if="editingAgentId" type="danger" plain style="margin-right:auto"
-                   @click="deleteAgentFromDialog">删除智能体</el-button>
+                   :loading="agentDeleting" @click="deleteAgentFromDialog">删除智能体</el-button>
         <el-button @click="agentDialog = false">取消</el-button>
-        <el-button type="primary" @click="saveAgent">保存</el-button>
+        <el-button type="primary" :loading="agentSaving" @click="saveAgent">保存</el-button>
       </template>
     </el-dialog>
   </el-container>
@@ -1019,6 +1061,8 @@ function onBodyClick(e, m) {
 .color-dot{width:20px;height:20px;border-radius:6px;cursor:pointer;border:2px solid transparent}
 .model-tag{font-size:var(--fs-xs);color:var(--ink2);background:var(--mist);border-color:var(--line)}
 .scope-hint{color:var(--accent);opacity:.85}
+/* 提交中的图标按钮：置灰并禁用点击，避免重复触发 */
+.ops.busy, .rate.busy{opacity:.35;pointer-events:none}
 .form-tip{font-size:var(--fs-2xs);color:var(--ink3);margin-top:4px;line-height:1.4}
 .color-dot.sel{border-color:var(--ink)}
 </style>

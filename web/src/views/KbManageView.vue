@@ -131,9 +131,17 @@ function fmtDur(ms) {
 }
 
 // ── 操作 ──
-function rebuildKb() {
-  if (!currentId.value) return
-  api.post('/api/index/rebuild?kbId=' + encodeURIComponent(currentId.value)).then((r) => {
+const rebuildLoading = ref(false)         // 构建索引请求中
+const cancelBuilding = ref(false)         // 取消构建请求中
+const embeddingConfirming = ref(false)    // 向量化确认请求中
+const tagSaving = ref(false)              // 标签保存中
+const removingPath = ref('')              // 正在删除的文件
+
+async function rebuildKb() {
+  if (!currentId.value || rebuildLoading.value) return
+  rebuildLoading.value = true
+  try {
+    const r = await api.post('/api/index/rebuild?kbId=' + encodeURIComponent(currentId.value))
     if (r.started) {
       watchBuild = true
       ElMessage.info('开始构建索引…')
@@ -143,26 +151,44 @@ function rebuildKb() {
       ElMessage.warning(`知识库「${r.runningKbName}」正在构建中，请等待完成`)
     }
     pollStatus()
-  })
+  } catch (e) {
+    ElMessage.error('启动构建失败：' + (e.message || e))
+  } finally {
+    rebuildLoading.value = false
+  }
 }
 
 function cancelBuild() {
+  if (cancelBuilding.value) return
   ElMessageBox.confirm('取消当前构建任务？已处理的文件会保留，下次构建自动续上。', '取消构建', {
     type: 'warning', confirmButtonText: '取消任务', cancelButtonText: '继续构建',
-  }).then(() => {
-    api.post('/api/index/cancel').then(() => {
+  }).then(async () => {
+    cancelBuilding.value = true
+    try {
+      await api.post('/api/index/cancel')
       ElMessage.info('已请求取消')
       setTimeout(pollStatus, 400)
-    })
+    } catch (e) {
+      ElMessage.error('取消失败：' + (e.message || e))
+    } finally {
+      cancelBuilding.value = false
+    }
   }).catch(() => {})
 }
 
-function confirmEmbed(vector = true) {
+async function confirmEmbed(vector = true) {
+  if (embeddingConfirming.value) return
   const tip = vector ? '已确认，开始向量化' : '已跳过向量化，仅建关键词索引'
-  api.post('/api/index/confirm-embed?vector=' + vector).then(() => {
+  embeddingConfirming.value = true
+  try {
+    await api.post('/api/index/confirm-embed?vector=' + vector)
     ElMessage.info(tip)
     setTimeout(pollStatus, 300)
-  })
+  } catch (e) {
+    ElMessage.error('操作失败：' + (e.message || e))
+  } finally {
+    embeddingConfirming.value = false
+  }
 }
 
 function goBuildKb() {
@@ -264,7 +290,9 @@ async function doFetchUrl() {
 }
 
 async function saveTags() {
+  if (tagSaving.value) return
   const { path, tags } = tagEdit.value
+  tagSaving.value = true
   try {
     await api.post(`/api/kb/${currentId.value}/docmeta`, { path, tags })
     metaDocs.value = { ...metaDocs.value, [path]: { ...(metaDocs.value[path] || {}), tags: [...tags] } }
@@ -272,6 +300,8 @@ async function saveTags() {
     tagEdit.value.show = false
   } catch (e) {
     ElMessage.error('保存失败：' + e)
+  } finally {
+    tagSaving.value = false
   }
 }
 
@@ -420,18 +450,25 @@ async function doUpload() {
 }
 
 function removeFile(n) {
+  if (removingPath.value) return
   ElMessageBox.confirm(
     `从知识库删除「${n.name}」？只删知识库副本，源目录不受影响；索引将在下次构建时移除该文档。`,
     '删除文件', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-  ).then(() => {
-    api.del(`/api/kb/${currentId.value}/file?path=${encodeURIComponent(n.path)}`).then((r) => {
+  ).then(async () => {
+    removingPath.value = n.path
+    try {
+      const r = await api.del(`/api/kb/${currentId.value}/file?path=${encodeURIComponent(n.path)}`)
       if (r.ok) {
         ElMessage.success('已删除')
         loadTree(currentId.value, true)
       } else {
         ElMessage.error(r.error || '删除失败')
       }
-    })
+    } catch (e) {
+      ElMessage.error('删除失败：' + (e.message || e))
+    } finally {
+      removingPath.value = ''
+    }
   }).catch(() => {})
 }
 
@@ -567,7 +604,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
           <el-icon style="margin-right:4px"><Link /></el-icon>网页接入
         </el-button>
         <el-tooltip content="增量构建：只处理新增与变更的文件，向量按内容 hash 复用，不重复调用接口" placement="bottom">
-          <el-button size="small" :disabled="!currentId || runningForThis" @click="rebuildKb">构建索引</el-button>
+          <el-button size="small" :disabled="!currentId || runningForThis" :loading="rebuildLoading" @click="rebuildKb">构建索引</el-button>
         </el-tooltip>
         <el-button size="small" type="danger" plain :disabled="!currentId || kbDeleteBusy" :loading="kbDeleteBusy" @click="deleteKb">删除</el-button>
         <span class="hstat" v-if="stats">
@@ -597,7 +634,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
             <el-progress :percentage="filePct" :stroke-width="6" :show-text="false" style="flex:1" />
             <span class="btxt">{{ live.filesDone }}/{{ live.filesTotal }} 文件 · 已用 {{ fmtDur(live.elapsedMs) }}</span>
           </template>
-          <el-button size="small" text type="danger" @click="cancelBuild">取消</el-button>
+          <el-button size="small" text type="danger" :loading="cancelBuilding" @click="cancelBuild">取消</el-button>
         </div>
         <div v-if="live.phase === 'embedding'" class="brow sub">
           <span class="btxt">向量化</span>
@@ -619,9 +656,9 @@ const failedList = computed(() => st.value?.last?.failed || [])
             10 分钟内未操作将自动放弃本次构建。
           </span>
           <div class="awaitbtns">
-            <el-button size="small" type="primary" @click="confirmEmbed(true)">确认执行</el-button>
-            <el-button size="small" @click="confirmEmbed(false)">跳过向量化</el-button>
-            <el-button size="small" type="danger" plain @click="cancelBuild">取消任务</el-button>
+            <el-button size="small" type="primary" :loading="embeddingConfirming" @click="confirmEmbed(true)">确认执行</el-button>
+            <el-button size="small" :loading="embeddingConfirming" @click="confirmEmbed(false)">跳过向量化</el-button>
+            <el-button size="small" type="danger" plain :loading="cancelBuilding" @click="cancelBuild">取消任务</el-button>
           </div>
         </div>
       </el-alert>
@@ -631,7 +668,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
                 :title="`知识库「${st.runningKbName}」${st.runningPhase === 'awaiting_confirm' ? '正在等待向量化确认' : '正在构建中'}（同一时间只跑一个构建任务）`">
         <div class="awaitbtns">
           <el-button size="small" @click="goBuildKb">前往查看</el-button>
-          <el-button size="small" type="danger" plain @click="cancelBuild">取消该任务</el-button>
+          <el-button size="small" type="danger" plain :loading="cancelBuilding" @click="cancelBuild">取消该任务</el-button>
         </div>
       </el-alert>
 
@@ -662,7 +699,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
         <el-text size="small" type="warning">
           有 {{ stats.pending }} 个文件尚未进入索引
         </el-text>
-        <el-button size="small" link type="primary" @click="rebuildKb">立即构建</el-button>
+        <el-button size="small" link type="primary" :loading="rebuildLoading" @click="rebuildKb">立即构建</el-button>
       </div>
 
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
@@ -699,7 +736,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
                     <el-icon class="del" @click.stop="openTagEdit(n)"><PriceTag /></el-icon>
                   </el-tooltip>
                   <el-tooltip content="从知识库删除该文件" placement="top">
-                    <el-icon class="del" @click.stop="removeFile(n)"><Delete /></el-icon>
+                    <el-icon class="del" :class="{ busy: removingPath === n.path }" @click.stop="removeFile(n)"><Delete /></el-icon>
                   </el-tooltip>
                 </span>
               </div>
@@ -825,7 +862,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
       <div class="formhint">清空全部标签即清除该文档的标签；标签用于检索过滤，不参与分词</div>
       <template #footer>
         <el-button @click="tagEdit.show = false">取消</el-button>
-        <el-button type="primary" @click="saveTags">保存</el-button>
+        <el-button type="primary" :loading="tagSaving" @click="saveTags">保存</el-button>
       </template>
     </el-dialog>
 
@@ -971,4 +1008,6 @@ const failedList = computed(() => st.value?.last?.failed || [])
 .urlrow .uurl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--el-text-color-primary)}
 .urlrow .uinfo{color:var(--el-text-color-secondary);max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .urlrow .uinfo.fail{color:var(--el-color-danger)}
+/* 删除进行中的行内图标：置灰并禁用点击 */
+.del.busy{opacity:.35;pointer-events:none}
 </style>
