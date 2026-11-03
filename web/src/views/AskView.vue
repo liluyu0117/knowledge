@@ -128,12 +128,25 @@ function loadAgents() {
 }
 function openAgentDialog(agent) {
   editingAgentId.value = agent?.id || null
+  const firstProvider = (settings.value?.providers || [])[0]
   agentForm.value = agent
     ? { ...agent }
     : { name: '', color: AGENT_COLORS[agentList.value.length % AGENT_COLORS.length],
-        description: '', provider: (settings.value?.providers || [])[0]?.name || '',
-        model: '', kbId: agentKbId(), systemPrompt: '' }
+        description: '', provider: firstProvider?.name || '',
+        model: firstProvider?.chatModel || '', kbId: agentKbId(), systemPrompt: '' }
   agentDialog.value = true
+}
+
+/** 厂商 → 该厂商在设置里配置的对话模型 */
+function providerOf(name) {
+  return (settings.value?.providers || []).find((p) => p.name === name) || null
+}
+
+/** 切换厂商时默认带出该厂商的对话模型（用户仍可手改） */
+function onAgentProviderChange(name) {
+  agentForm.value.provider = name
+  const p = providerOf(name)
+  agentForm.value.model = p?.chatModel || ''
 }
 function saveAgent() {
   const b = agentForm.value
@@ -813,11 +826,15 @@ function onBodyClick(e, m) {
         </el-form-item>
         <el-form-item label="描述"><el-input v-model="agentForm.description" placeholder="一句话介绍职责" /></el-form-item>
         <el-form-item label="厂商">
-          <el-select v-model="agentForm.provider" style="width:100%">
-            <el-option v-for="p in settings?.providers || []" :key="p.name" :value="p.name" :label="p.name" />
+          <el-select :model-value="agentForm.provider" style="width:100%" @change="onAgentProviderChange">
+            <el-option v-for="p in settings?.providers || []" :key="p.name" :value="p.name"
+                       :label="p.name + (p.chatModel ? ' · ' + p.chatModel : '')" />
           </el-select>
         </el-form-item>
-        <el-form-item label="模型"><el-input v-model="agentForm.model" placeholder="如 deepseek-chat" /></el-form-item>
+        <el-form-item label="模型">
+          <el-input v-model="agentForm.model" :placeholder="providerOf(agentForm.provider)?.chatModel || '如 deepseek-chat'" />
+          <div class="form-tip">默认取「厂商」在设置里配置的对话模型，可改</div>
+        </el-form-item>
         <el-form-item label="知识库">
           <el-select v-model="agentForm.kbId" style="width:100%">
             <el-option v-for="k in agentKbs" :key="k.id" :value="k.id" :label="k.name" />
@@ -1002,5 +1019,6 @@ function onBodyClick(e, m) {
 .color-dot{width:20px;height:20px;border-radius:6px;cursor:pointer;border:2px solid transparent}
 .model-tag{font-size:var(--fs-xs);color:var(--ink2);background:var(--mist);border-color:var(--line)}
 .scope-hint{color:var(--accent);opacity:.85}
+.form-tip{font-size:var(--fs-2xs);color:var(--ink3);margin-top:4px;line-height:1.4}
 .color-dot.sel{border-color:var(--ink)}
 </style>
