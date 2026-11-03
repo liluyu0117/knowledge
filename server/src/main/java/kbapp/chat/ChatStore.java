@@ -64,9 +64,32 @@ public class ChatStore {
     public synchronized Session createSession(String title, String agentId) {
         String id = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         String now = java.time.LocalDateTime.now().withNano(0).toString();
+        String base = (title == null || title.isBlank()) ? "新会话" : title.trim();
+        String finalTitle = uniquifyTitle(base);
         exec("INSERT INTO session(id,title,created_at,updated_at,agent_id) VALUES(?,?,?,?,?)",
-                id, title, now, now, agentId);
-        return new Session(id, title, now, now);
+                id, finalTitle, now, now, agentId);
+        return new Session(id, finalTitle, now, now);
+    }
+
+    /** 同名标题自动追加序号，避免会话列表出现多个一模一样的标题。 */
+    private String uniquifyTitle(String base) {
+        if (!titleExists(base)) return base;
+        for (int n = 2; n < 100; n++) {
+            String candidate = base + " (" + n + ")";
+            if (!titleExists(candidate)) return candidate;
+        }
+        return base + " (" + System.currentTimeMillis() % 1000 + ")";
+    }
+
+    private boolean titleExists(String title) {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT 1 FROM session WHERE title=? LIMIT 1")) {
+            ps.setString(1, title);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /** 会话归属的智能体 id；未绑定返回 null。 */

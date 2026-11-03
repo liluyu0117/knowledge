@@ -29,7 +29,12 @@ export function mdToHtml(md, opts = {}) {
     const fence = line.trim().match(/^```/)
     if (fence) {
       closeList()
-      html += inCode ? '</pre>' : '<pre class="md-pre">'
+      if (inCode) {
+        // 代码块结束：包一层容器，带复制按钮（点击由外层统一处理）
+        html += '</code></pre><button class="md-copy" type="button" title="复制代码">复制</button></div>'
+      } else {
+        html += '<div class="md-code"><pre class="md-pre"><code>'
+      }
       inCode = !inCode
       continue
     }
@@ -87,6 +92,6 @@ export function mdToHtml(md, opts = {}) {
     }
   }
   closeList()
-  if (inCode) html += '</pre>'
+  if (inCode) html += '</code></pre></div>' // 流式未闭合时也要收尾，避免嵌套错乱
   return html
 }

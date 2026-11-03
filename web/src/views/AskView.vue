@@ -1,11 +1,11 @@
 <script setup>
-import { ref, reactive, computed, nextTick, onMounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { api, askSse, downloadText } from '../api'
 import { preview } from '../store/preview'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft } from '@element-plus/icons-vue'
+import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft, Lock, Setting, Select, CloseBold, ArrowUp } from '@element-plus/icons-vue'
 
 const sessions = ref([])
 const currentId = ref('')
@@ -14,6 +14,8 @@ const question = ref('')
 const askInputRef = ref(null)
 const upInput = ref(null)
 const uploading = ref(false)
+const upStatus = ref('')         // 上传/建索引进度文案
+const expandedQ = ref({})        // 长提问展开状态
 const topK = ref(5)              // 送进上下文的片段数
 const styleMode = ref('normal')  // brief | normal | detail
 
@@ -73,6 +75,24 @@ const lockedAgent = computed(() => {
 /** 范围条显示「全部」，内部空串表示不过滤 */
 /** 操作条上显示的检索范围文案 */
 const scopeLabel = computed(() => (activeFolder.value ? activeFolder.value : '全部'))
+/** 检索设置有非默认项时给入口加个角标 */
+const scopeDirty = computed(() =>
+  !!activeFolder.value || topK.value !== 5 || styleMode.value !== 'normal' || askTags.value.length > 0)
+
+/** 顶部智能体下拉的选项文案：名称 + 模型，一眼看清用的是什么模型 */
+function agentLabel(a) {
+  const model = a?.model || '默认模型'
+  return `${a?.name || '未命名'} · ${model}`
+}
+/** 顶部下拉选到「新建智能体」时打开对话框 */
+function onTopAgentChange(v) {
+  if (v === '__new__') { openAgentDialog(null); return }
+  onAgentChange(v)
+}
+/** 长提问折叠/展开 */
+function toggleQ(i) {
+  expandedQ.value = { ...expandedQ.value, [i]: !expandedQ.value[i] }
+}
 
 const scopeValue = computed({
   get: () => activeFolder.value || '全部',
@@ -203,7 +223,23 @@ onMounted(async () => {
     agentId.value = agentList.value[0].id
     await applyAgentScope(agentId.value)
   }
+  window.addEventListener('keydown', onGlobalKey)
 })
+
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
+
+/** 全局快捷键：Ctrl/Cmd+K 新会话，Esc 停止生成（输入框内不劫持 Esc） */
+function onGlobalKey(e) {
+  const mod = e.ctrlKey || e.metaKey
+  if (mod && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    newSession()
+    return
+  }
+  if (e.key === 'Escape' && generating.value) {
+    stopGen()
+  }
+}
 
 async function reloadSessions() {
   sessions.value = await api.get('/api/sessions')
@@ -405,36 +441,48 @@ function onPlusCmd(cmd) {
   else if (cmd === 'clear') { question.value = ''; focusAsk() }
 }
 
-/** 上传文档到当前智能体所属知识库，随后触发增量构建并轮询结果 */
+/** 上传文档到当前智能体所属知识库，随后触发增量构建并轮询结果（带进度） */
 async function onUpload(e) {
   const f = e.target.files?.[0]
   e.target.value = ''
   if (!f) return
   const kb = agentKbId()
   uploading.value = true
+  upStatus.value = '上传中'
   try {
     const res = await fetch('/api/kb/' + kb + '/upload?name=' + encodeURIComponent(f.name), {
       method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f,
     }).then((r) => r.json())
     if (!res.ok) { ElMessage.error(res.error || '上传失败'); return }
-    ElMessage.info('已上传，正在建索引…')
+    upStatus.value = '建索引中'
     await api.post('/api/index/rebuild?kbId=' + kb, {})
-    for (let i = 0; i < 40; i++) {
+    let finished = false
+    for (let i = 0; i < 120; i++) {
       await new Promise((r) => setTimeout(r, 1500))
       const st = await api.get('/api/index/status?kbId=' + kb)
-      if (st.live?.phase === 'awaiting_confirm') {
+      const live = st.live || {}
+      if (live.phase === 'awaiting_confirm') {
         ElMessage.warning('索引在等你确认向量化，请到「知识库」页处理后再提问')
+        finished = true
         break
+      }
+      if (live.filesTotal) {
+        upStatus.value = `建索引 ${live.filesDone || 0}/${live.filesTotal}`
       }
       if (!st.running) {
         ElMessage.success('「' + f.name + '」已加入知识库，可以直接提问了')
+        finished = true
         break
       }
+    }
+    if (!finished) {
+      ElMessage.warning('建索引时间较长，仍在后台继续；稍后可在「知识库」页查看进度')
     }
   } catch (err) {
     ElMessage.error('上传失败：' + (err.message || err))
   } finally {
     uploading.value = false
+    upStatus.value = ''
   }
 }
 
@@ -474,7 +522,8 @@ function exportMd() {
     else md += '## 答\n\n' + m.content + '\n\n'
     if (m.sources?.length) {
       md += '### 来源\n\n'
-      for (const s of m.sources) md += `- [${s.docTitle}](file://${s.docPath})（块 ${s.seq}）\n`
+      // file:// 链接在浏览器/编辑器里点不开，改成「标题（路径 · 块 n）」纯文本
+      for (const s of m.sources) md += `- ${s.docTitle}（${s.docPath} · 块 ${s.seq}）\n`
       md += '\n'
     }
   }
@@ -510,8 +559,19 @@ function mergedSources(sources) {
   return [...map.values()]
 }
 
-// 角标点击 → 打开对应来源预览
+// 正文点击 → 引用角标打开来源 / 代码块复制
 function onBodyClick(e, m) {
+  const copyBtn = e.target.closest('.md-copy')
+  if (copyBtn) {
+    const pre = copyBtn.parentElement?.querySelector('pre')
+    const code = pre ? pre.innerText : ''
+    if (code) {
+      navigator.clipboard.writeText(code)
+      copyBtn.textContent = '已复制'
+      setTimeout(() => { copyBtn.textContent = '复制' }, 1500)
+    }
+    return
+  }
   const el = e.target.closest('.cite')
   if (!el || !m.sources?.length) return
   const n = parseInt(el.dataset.cite, 10)
@@ -530,7 +590,6 @@ function onBodyClick(e, m) {
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
       <el-scrollbar class="sess-list">
-        <el-button class="newagent" size="small" @click="openAgentDialog(null)">🤖 新建智能体</el-button>
         <template v-for="g in agentGroups" :key="g.key">
           <div class="lab gh" @click="collapsed[g.key] = !collapsed[g.key]">
             <span class="gdot" :style="{ background: g.color }"></span>
@@ -573,22 +632,22 @@ function onBodyClick(e, m) {
 
     <el-main class="qa-main">
       <div class="qa-top">
-        <el-text tag="b" size="large">{{ sessions.find((s) => s.id === currentId)?.title || '新会话' }}</el-text>
-        <el-tooltip :disabled="!lockedAgent" placement="bottom"
-                    content="该会话已绑定智能体，模型与检索范围随之固定；新建会话可重新选择">
-          <el-select :model-value="agentId" size="small" style="width:180px;margin-left:auto"
-                     :disabled="!!lockedAgent" placeholder="选择智能体" @change="onAgentChange">
-            <el-option v-for="a in agentList" :key="a.id" :value="a.id" :label="'🤖 ' + a.name" />
-          </el-select>
+        <el-text tag="b" size="large" class="qa-title">
+          {{ sessions.find((s) => s.id === currentId)?.title || '新会话' }}
+        </el-text>
+        <!-- 顶部只有一个控件：智能体 + 模型；会话已绑定时显示只读状态 -->
+        <el-tooltip v-if="lockedAgent" placement="bottom"
+                    content="该会话已绑定智能体，模型与检索范围随之固定；新建会话（Ctrl+K）可重新选择">
+          <span class="agent-lock">
+            <el-icon class="lockicon"><Lock /></el-icon>
+            <b>{{ lockedAgent.name }}</b>
+            <i>·</i>{{ lockedAgent.provider || '未设厂商' }} {{ lockedAgent.model || '' }}
+          </span>
         </el-tooltip>
-        <el-tag v-if="activeAgent?.provider" size="small" effect="plain" class="model-tag">
-          {{ activeAgent.provider }} · {{ activeAgent.model || '默认模型' }}
-        </el-tag>
-        <el-select v-else :model-value="settings?.activeChat" size="small" style="width:200px"
-                   @change="(v) => pickProvider(v)">
-          <template #label>{{ activeProvider()?.name || '未配置厂商' }} · {{ activeProvider()?.chatModel || '-' }}</template>
-          <el-option v-for="p in settings?.providers || []" :key="p.name" :value="p.name"
-                     :label="p.name + ' · ' + (p.chatModel || '')" />
+        <el-select v-else :model-value="agentId" size="small" class="agent-sel"
+                   placeholder="选择智能体" @change="onTopAgentChange">
+          <el-option v-for="a in agentList" :key="a.id" :value="a.id" :label="'🤖 ' + agentLabel(a)" />
+          <el-option value="__new__" label="＋ 新建智能体" divided />
         </el-select>
       </div>
 
@@ -603,9 +662,13 @@ function onBodyClick(e, m) {
           <div class="eg-tip">回答只基于知识库内容，正文中的角标可点开原文核对</div>
         </div>
         <template v-for="(m, i) in messages" :key="m.uid || m.id || i">
-          <el-alert v-if="m.role === 'user'" class="q" type="info" :closable="false"
-                    :title="m.content.length > 60 ? m.content.slice(0, 60) + '…' : m.content"
-                    :description="m.content.length > 60 ? m.content : undefined" />
+          <!-- 用户提问：自定义气泡，超长可展开 -->
+          <div v-if="m.role === 'user'" class="q" :class="{ long: m.content.length > 120 && !expandedQ[i] }">
+            <div class="q-body">{{ m.content }}</div>
+            <span v-if="m.content.length > 120" class="q-toggle" @click="toggleQ(i)">
+              {{ expandedQ[i] ? '收起' : '展开全文' }}
+            </span>
+          </div>
           <el-card v-else shadow="never" class="ans">
             <template #header>
               <div class="who">
@@ -614,10 +677,10 @@ function onBodyClick(e, m) {
                 <el-button link size="small" @click="copyAns(m)">复制</el-button>
                 <span v-if="m.id" class="rate">
                   <el-tooltip content="回答准确" placement="top">
-                    <span class="thumb" :class="{ on: m.feedback === 1 }" @click="rate(m, 1)">👍</span>
+                    <el-icon class="thumb" :class="{ on: m.feedback === 1 }" @click="rate(m, 1)"><Select /></el-icon>
                   </el-tooltip>
                   <el-tooltip content="答得不对" placement="top">
-                    <span class="thumb" :class="{ bad: m.feedback === -1 }" @click="rate(m, -1)">👎</span>
+                    <el-icon class="thumb bad" :class="{ on: m.feedback === -1 }" @click="rate(m, -1)"><CloseBold /></el-icon>
                   </el-tooltip>
                 </span>
                 <!-- 低频操作：悬停卡片才出现，减少长会话噪音 -->
@@ -641,7 +704,10 @@ function onBodyClick(e, m) {
         </template>
       </div>
       <el-button v-if="!follow && messages.length" class="to-bottom" circle size="small"
-                 title="回到最新" @click="jumpToBottom">↓</el-button>
+                 :class="{ fresh: generating }" title="回到最新" @click="jumpToBottom">
+        <template v-if="generating">有新内容 ↓</template>
+        <template v-else>↓</template>
+      </el-button>
 
       <div v-if="!agentList.length" class="scope">
         <el-text size="small" type="warning">还没有智能体，先新建一个再提问</el-text>
@@ -665,7 +731,7 @@ function onBodyClick(e, m) {
         <div class="bar">
           <el-dropdown trigger="click" @command="onPlusCmd">
             <span class="chip" :class="{ busy: uploading }">
-              <el-icon><Plus /></el-icon>{{ uploading ? '上传中…' : '附件' }}
+              <el-icon><Plus /></el-icon>{{ uploading ? (upStatus || '上传中') : '附件' }}
             </span>
             <template #dropdown>
               <el-dropdown-menu>
@@ -686,48 +752,42 @@ function onBodyClick(e, m) {
             </template>
           </el-dropdown>
 
-          <el-dropdown trigger="click" @command="(v) => (activeFolder = v)">
-            <span class="chip" :title="'检索范围 · ' + currentKbName">范围：{{ scopeLabel }}</span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="">全部</el-dropdown-item>
-                <el-dropdown-item v-for="f in folders" :key="f" :command="f">{{ f }}</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-
-          <el-popover v-if="kbAllTags.length" trigger="click" width="260" placement="top-start">
+          <!-- 检索相关设置收进一个入口，避免操作条被一堆 chip 占满 -->
+          <el-popover trigger="click" width="310" placement="top-start">
             <template #reference>
-              <span class="chip" :class="{ on: askTags.length }"
-                    :title="'标签过滤 · ' + currentKbName">
-                标签{{ askTags.length ? `：${askTags.length}` : '' }}
+              <span class="chip" :class="{ on: scopeDirty }" title="检索范围 / 片段数 / 回答风格">
+                <el-icon><Setting /></el-icon>检索设置
               </span>
             </template>
-            <el-checkbox-group v-model="askTags" class="tagpick">
-              <el-checkbox v-for="t in kbAllTags" :key="t" :value="t">{{ t }}</el-checkbox>
-            </el-checkbox-group>
-            <div class="tagtip">只检索带所选标签（任一命中）的文档</div>
+            <div class="setrow">
+              <label>范围</label>
+              <el-select v-model="scopeValue" size="small" style="flex:1" :title="'知识库：' + currentKbName">
+                <el-option label="全部" value="全部" />
+                <el-option v-for="f in folders" :key="f" :label="f" :value="f" />
+              </el-select>
+            </div>
+            <div class="setrow">
+              <label>片段</label>
+              <el-radio-group v-model="topK" size="small">
+                <el-radio-button :value="3">3</el-radio-button>
+                <el-radio-button :value="5">5</el-radio-button>
+                <el-radio-button :value="8">8</el-radio-button>
+              </el-radio-group>
+            </div>
+            <div class="setrow">
+              <label>风格</label>
+              <el-radio-group v-model="styleMode" size="small">
+                <el-radio-button v-for="st in STYLES" :key="st.v" :value="st.v">{{ st.l }}</el-radio-button>
+              </el-radio-group>
+            </div>
+            <div v-if="kbAllTags.length" class="setrow top">
+              <label>标签</label>
+              <el-checkbox-group v-model="askTags" class="tagpick">
+                <el-checkbox v-for="t in kbAllTags" :key="t" :value="t">{{ t }}</el-checkbox>
+              </el-checkbox-group>
+            </div>
+            <div class="settip">范围取自知识库「{{ currentKbName }}」；标签为任一命中</div>
           </el-popover>
-
-          <el-dropdown trigger="click" @command="(v) => (topK = v)">
-            <span class="chip">片段 {{ topK }}</span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item :command="3">3 条（更聚焦）</el-dropdown-item>
-                <el-dropdown-item :command="5">5 条（默认）</el-dropdown-item>
-                <el-dropdown-item :command="8">8 条（更全面）</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-
-          <el-dropdown trigger="click" @command="(v) => (styleMode = v)">
-            <span class="chip">{{ STYLES.find((x) => x.v === styleMode)?.l || '标准' }}</span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item v-for="st in STYLES" :key="st.v" :command="st.v">{{ st.l }}</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
 
           <span class="grow"></span>
           <span v-if="question.length" class="cnt">{{ question.length }}</span>
@@ -806,14 +866,27 @@ function onBodyClick(e, m) {
   font-size:13px;color:var(--ink3);background:#fff;border:1px solid var(--el-border-color);cursor:pointer}
 .sess .ops .el-icon:hover{color:var(--accent);border-color:var(--accent)}
 .sess .it .d{font-size:var(--fs-2xs);color:var(--ink3);margin-top:2px;font-variant-numeric:tabular-nums}
-.qa-main{display:flex;flex-direction:column;padding:0}
+.qa-main{display:flex;flex-direction:column;padding:0;position:relative}
 .qa-top{display:flex;align-items:center;gap:12px;padding:var(--page-y) var(--page-x) 0;min-height:54px}
 .qa-top h3, .qa-top .el-text{font-family:var(--sans);font-size:var(--fs-xl);font-weight:600;letter-spacing:0;line-height:1.35}
+.qa-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-sel{width:270px;flex:0 0 auto}
+/* 会话已绑定智能体：只读胶囊 + 锁 */
+.agent-lock{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 10px;border-radius:8px;
+  background:var(--mist);border:1px solid var(--line);color:var(--ink2);font-size:var(--fs-xs);cursor:default}
+.agent-lock b{font-weight:600;color:var(--ink)}
+.agent-lock i{font-style:normal;opacity:.45}
+.agent-lock .lockicon{font-size:12px;color:var(--ink3)}
 .chat-scroll{flex:1;overflow:auto;padding:18px var(--page-x) 20px;display:flex;flex-direction:column;gap:16px}
-/* 提问：主色胶囊 */
+/* 提问：主色气泡（长文本可折叠） */
 .q{width:fit-content;margin-left:auto;max-width:66%;flex-shrink:0;background:var(--accent);color:#fff;
-  padding:10px 16px;border-radius:var(--radius) var(--radius) 4px var(--radius);white-space:pre-wrap;
-  font-size:var(--fs-base);line-height:var(--lh-base)}
+  padding:10px 16px;border-radius:var(--radius) var(--radius) 4px var(--radius);
+  font-size:var(--fs-base);line-height:var(--lh-base);position:relative}
+.q-body{white-space:pre-wrap;word-break:break-word}
+.q.long .q-body{display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden}
+.q-toggle{display:inline-block;margin-top:4px;font-size:var(--fs-2xs);opacity:.8;cursor:pointer;
+  text-decoration:underline;text-underline-offset:2px}
+.q-toggle:hover{opacity:1}
 /* 回答：档案摘录卡 —— 左侧书脊 */
 .ans{max-width:84%;flex-shrink:0;--el-card-border-color:var(--line);
   border-left:3px solid var(--accent);border-radius:6px var(--radius) var(--radius) 6px;
@@ -829,6 +902,15 @@ function onBodyClick(e, m) {
 /* 滚动到底部悬浮按钮 */
 .to-bottom{position:absolute;right:calc(var(--page-x) + 24px);bottom:150px;z-index:6;
   box-shadow:0 4px 14px rgba(20,24,38,.14)}
+/* 生成中且有新内容：按钮变宽并提示 */
+.to-bottom.fresh{width:auto;border-radius:14px;padding:0 12px;font-size:var(--fs-2xs);
+  background:var(--accent);color:#fff;border-color:var(--accent)}
+.to-bottom.fresh:hover{background:var(--accent);color:#fff;opacity:.92}
+/* 检索设置面板 */
+.setrow{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.setrow label{flex:0 0 34px;font-size:var(--fs-xs);color:var(--ink3)}
+.setrow.top{align-items:flex-start}
+.settip{font-size:var(--fs-2xs);color:var(--el-text-color-secondary);margin-top:4px}
 /* 空态引导 */
 .empty-guide{margin:auto;text-align:center;max-width:560px;padding:40px 0}
 .eg-h{font-size:var(--fs-base);color:var(--ink2);margin-bottom:14px}
@@ -868,11 +950,23 @@ function onBodyClick(e, m) {
 .body :deep(img){max-width:100%}
 .body :deep(*){scrollbar-width:none}
 .body :deep(*)::-webkit-scrollbar{display:none}
-.rate{display:inline-flex;gap:4px;margin-left:6px}
-.rate .thumb{font-size:13px;line-height:1;cursor:pointer;opacity:.45;filter:grayscale(1);transition:all var(--t-fast) var(--ease)}
-.rate .thumb:hover{opacity:.9;filter:none}
-.rate .thumb.on{opacity:1;filter:none;transform:scale(1.12)}
-.rate .thumb.bad{opacity:1;filter:none}
+/* 代码块：容器 + 右上角复制按钮 */
+.body :deep(.md-code){position:relative;margin:10px 0}
+.body :deep(.md-code .md-copy){position:absolute;top:6px;right:8px;font-size:var(--fs-2xs);
+  padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--card);
+  color:var(--ink2);cursor:pointer;opacity:0;transition:all var(--t-fast) var(--ease)}
+.body :deep(.md-code:hover .md-copy){opacity:1}
+.body :deep(.md-code .md-copy:hover){border-color:var(--accent);color:var(--accent)}
+.body :deep(.md-pre){background:var(--mist);border:1px solid var(--line);border-radius:8px;
+  padding:12px 14px;margin:0;font-family:var(--mono);font-size:var(--fs-sm);line-height:1.6;
+  white-space:pre-wrap;word-break:break-word}
+.rate{display:inline-flex;gap:2px;margin-left:4px}
+.rate .thumb{font-size:13px;cursor:pointer;color:var(--ink3);opacity:.5;transition:all var(--t-fast) var(--ease);
+  padding:3px;border-radius:6px}
+.rate .thumb:hover{opacity:1;background:var(--mist);color:var(--ink)}
+.rate .thumb.bad:hover{color:var(--el-color-danger)}
+.rate .thumb.on{opacity:1;transform:scale(1.08);color:var(--el-color-success);background:var(--el-color-success-light-9)}
+.rate .thumb.bad.on{color:var(--el-color-danger);background:var(--el-color-danger-light-9)}
 .srcrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed var(--line-soft)}
 .src{cursor:pointer;font-family:var(--sans);--el-tag-bg-color:var(--paper)}
 .thinking{display:flex;align-items:center;gap:6px;color:var(--ink3);font-size:var(--fs-xs);padding:4px 0}
@@ -893,7 +987,7 @@ function onBodyClick(e, m) {
   cursor:pointer;user-select:none;white-space:nowrap;transition:all var(--t-fast) var(--ease)}
 .chip:hover{border-color:var(--accent);color:var(--accent)}
 .chip.on{border-color:var(--accent);color:var(--accent);background:var(--el-color-primary-light-9)}
-.tagpick{display:flex;flex-direction:column;gap:0;max-height:220px;overflow:auto}
+.tagpick{display:flex;flex-direction:column;gap:0;max-height:160px;overflow:auto;flex:1}
 .tagpick .el-checkbox{height:26px;margin-right:0}
 .tagtip{font-size:var(--fs-2xs);color:var(--el-text-color-secondary);margin-top:6px}
 .chip.busy{opacity:.6;pointer-events:none}
@@ -902,7 +996,6 @@ function onBodyClick(e, m) {
 .bar .cnt{font-size:var(--fs-2xs);color:var(--ink3);font-variant-numeric:tabular-nums}
 .bar .send{width:34px;height:34px;margin-left:2px}
 .scope{display:flex;align-items:center;gap:8px;padding:0 var(--page-x) 8px;flex-wrap:wrap;background:var(--paper)}
-.newagent{width:100%;margin-bottom:4px}
 .sess .lab.gh .gdot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
 .sess .lab.gh .gedit{margin-left:auto;color:var(--ink3);cursor:pointer}
 .sess .lab.gh .gedit:hover{color:var(--accent)}

@@ -87,7 +87,7 @@ public class ChatService {
         }
         String sid = sessionId;
         if (sid == null || sid.isBlank()) {
-            sid = chat.createSession(question.length() > 20 ? question.substring(0, 20) : question, bindAgent).id();
+            sid = chat.createSession(makeTitle(question), bindAgent).id();
         } else if (agent != null) {
             // 旧会话（未绑定）里首次用智能体提问 → 补绑定，保证下次打开能回显该智能体
             String bound = chat.sessionAgent(sid);
@@ -179,5 +179,13 @@ public class ChatService {
                 chat.appendMessage(finalSid, "assistant", full.toString() + "\n\n（已停止生成）", sources, model);
             }
         });
+    }
+
+    /** 会话标题：压掉多余空白与句末标点，超长截断，避免列表里一长串重复问句。 */
+    private static String makeTitle(String question) {
+        String s = String.valueOf(question).replaceAll("\\s+", " ").trim();
+        s = s.replaceAll("[？?。！!，,；;：:\\s]+$", "");
+        if (s.isEmpty()) return "新会话";
+        return s.length() > 18 ? s.substring(0, 18) + "…" : s;
     }
 }
