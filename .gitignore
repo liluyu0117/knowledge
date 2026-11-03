@@ -18,6 +18,17 @@ server/src/main/resources/static/
 *.log
 .vite-dev.log
 
+# ── 便携启动包：自动下载的组件与构建产物不入库 ──
+portable/jdk/
+portable/maven/
+portable/m2/
+portable/tmp/
+portable/kb-data/
+portable/*.jar
+portable/*.zip
+portable/*.tgz
+portable/*.pkg
+
 # ── 编辑器/系统 ──
 .vscode/
 .DS_Store

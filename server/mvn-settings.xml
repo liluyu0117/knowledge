@@ -14,5 +14,5 @@
             <mirrorOf>spring-ai-*,spring-plugins</mirrorOf>
         </mirror>
     </mirrors>
-    <localRepository>C:\Users\22920\.m2\repository</localRepository>
+    <!-- 本地仓库由调用方 -Dmaven.repo.local 指定：开发用默认 .m2；便携启动用项目内 portable/m2 -->
 </settings>
