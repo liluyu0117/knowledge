@@ -4,6 +4,7 @@ import SettingsView from '../views/SettingsView.vue'
 import RetrieveTestView from '../views/RetrieveTestView.vue'
 import KbManageView from '../views/KbManageView.vue'
 import NotesView from '../views/NotesView.vue'
+import ToolsView from '../views/ToolsView.vue'
 
 const routes = [
   { path: '/', name: 'ask', component: AskView },
@@ -11,6 +12,7 @@ const routes = [
   { path: '/notes', name: 'notes', component: NotesView },
   { path: '/settings', name: 'settings', component: SettingsView },
   { path: '/retrievetest', name: 'retrievetest', component: RetrieveTestView },
+  { path: '/tools', name: 'tools', component: ToolsView },
 ]
 
 export default createRouter({ history: createWebHistory(), routes })

@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from './api'
-import { ChatDotRound, Files, Collection, EditPen, Setting, Search } from '@element-plus/icons-vue'
+import { ChatDotRound, Files, Collection, EditPen, Setting, Search, Tools } from '@element-plus/icons-vue'
 import './styles/tokens.css'
 import './styles/el-theme.css'
 
@@ -71,6 +71,9 @@ onUnmounted(() => clearTimeout(statusTimer))
       <router-link to="/retrievetest" class="rail-item" active-class="on">
         <el-icon><Search /></el-icon><span>调参</span>
       </router-link>
+      <router-link to="/tools" class="rail-item" active-class="on">
+        <el-icon><Tools /></el-icon><span>工具</span>
+      </router-link>
       <div class="rail-foot">
         <el-tag :type="statusType" effect="plain" size="small">{{ statusText }}</el-tag>
       </div>
@@ -89,12 +92,15 @@ onUnmounted(() => clearTimeout(statusTimer))
 .shell > *:not(.rail){flex:1 1 0;min-width:0;height:100%;overflow:hidden}
 .rail{
   width:64px;flex:0 0 64px;display:flex;flex-direction:column;align-items:center;
-  background:#FBFBFC;border-right:1px solid var(--line);padding:14px 0 12px;gap:4px;
+  background:#FBFBFC;border-right:1px solid var(--line);padding:12px 0 10px;gap:2px;
+  overflow-y:auto;scrollbar-width:none;
 }
+.rail::-webkit-scrollbar{display:none}
 .rail .logo{
   width:36px;height:36px;border-radius:10px;display:grid;place-items:center;
-  background:var(--accent);color:#fff;font-weight:700;font-size:16px;margin-bottom:14px;
+  background:var(--accent);color:#fff;font-weight:700;font-size:16px;margin-bottom:10px;flex:0 0 auto;
 }
-.rail-foot{margin-top:auto;padding:0 6px;width:100%;text-align:center}
-.rail-foot .el-tag{max-width:100%;white-space:normal}
+.rail :deep(.rail-item){flex:0 0 auto}
+.rail-foot{margin-top:auto;padding:6px 6px 0;width:100%;text-align:center;flex:0 0 auto}
+.rail-foot .el-tag{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
 </style>
