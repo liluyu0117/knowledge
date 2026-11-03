@@ -1,11 +1,12 @@
 @echo off
-rem 知识库一键启动：双击后等十几秒，浏览器自动打开 http://localhost:39217
-title 知识库服务(关闭本窗口即停止)
-set "JAVA_HOME=E:\tool\jdk-17.0.15"
-set "PATH=%JAVA_HOME%\bin;%PATH%"
-cd /d "%~dp0server"
-start "" powershell -WindowStyle Hidden -Command "Start-Sleep 12; Start-Process http://localhost:39217"
-call mvn -s mvn-settings.xml spring-boot:run
-echo.
-echo 服务已退出。
-pause
+rem ============================================
+rem  知识库一键启动（统一入口）
+rem  实际逻辑在 portable\start.bat：自动准备 JDK / Maven / 构建 jar 后启动
+rem ============================================
+cd /d "%~dp0"
+if not exist "portable\start.bat" (
+    echo [错误] 未找到 portable\start.bat，请确认项目目录完整
+    pause
+    exit /b 1
+)
+call "portable\start.bat"

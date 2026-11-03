@@ -1,70 +1,70 @@
 @echo off
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
-title çŸ¥è¯†åº“ä¸€é”®å¯åŠ¨
+title ÖªÊ¶¿âÒ»¼üÆô¶¯
 
-REM â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-REM  çŸ¥è¯†åº“ä¸€é”®å¯åŠ¨ï¼ˆWindows / cmd / PowerShell åŒå‡»å‡å¯ï¼‰
-REM  é¦–æ¬¡è¿è¡Œä¼šè‡ªåŠ¨ï¼šä¸‹è½½ JDK 17 â†’ ä¸‹è½½ Maven â†’ æ„å»ºæœåŠ¡ jar
-REM  ä¹‹åæ¯æ¬¡è¿è¡Œç›´æ¥å¯åŠ¨ï¼Œæ•°æ®ç›®å½•ä¸ºæœ¬ç›®å½•ä¸‹çš„ .kb\
-REM â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+REM ¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T
+REM  ÖªÊ¶¿âÒ»¼üÆô¶¯£¨Windows / cmd / PowerShell Ë«»÷¾ù¿É£©
+REM  Ê×´ÎÔËĞĞ»á×Ô¶¯£ºÏÂÔØ JDK 17 ¡ú ÏÂÔØ Maven ¡ú ¹¹½¨·şÎñ jar
+REM  Ö®ºóÃ¿´ÎÔËĞĞÖ±½ÓÆô¶¯£¬Êı¾İÄ¿Â¼Îª±¾Ä¿Â¼ÏÂµÄ .kb\
+REM ¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T
 
 set "JAVA_CMD="
 if exist "jdk\bin\java.exe" set "JAVA_CMD=jdk\bin\java.exe"
-for /d %%D in ("jdk\jdk-*") do if exist "%%D\bin\java.exe" set "JAVA_CMD=%%D\bin\java.exe"
+for /d %%D in ("jdk\jdk-*") do if exist "%%D\bin\java.exe" set "JAVA_CMD=%%~fD\bin\java.exe"
 if not defined JAVA_CMD (
     where java >nul 2>nul && set "JAVA_CMD=java"
 )
 
 if not defined JAVA_CMD (
-    echo [1/3] æœªæ£€æµ‹åˆ° JDK 17ï¼Œè‡ªåŠ¨ä¸‹è½½ï¼ˆçº¦ 190MBï¼Œåªéœ€ä¸€æ¬¡ï¼Œä¸‹è½½åˆ°æœ¬ç›®å½• jdk\ï¼‰...
-    powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; $urls=@('https://mirrors.tuna.tsinghua.edu.cn/Adoptium/17/jdk/x64/windows/OpenJDK17U-jdk_x64_windows_hotspot_17.0.20.1_1.zip','https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jdk/hotspot/normal/eclipse?project=jdk'); foreach($u in $urls){ try { Invoke-WebRequest -Uri $u -OutFile jdk.zip -TimeoutSec 600; break } catch { Write-Host \"  æºä¸å¯ç”¨ï¼Œæ¢ä¸‹ä¸€ä¸ª\" } }; if (Test-Path jdk.zip) { Expand-Archive jdk.zip -DestinationPath jdk -Force; Remove-Item jdk.zip }"
-    for /d %%D in ("jdk\jdk-*") do if exist "%%D\bin\java.exe" set "JAVA_CMD=%%D\bin\java.exe"
+    echo [1/3] Î´¼ì²âµ½ JDK 17£¬×Ô¶¯ÏÂÔØ£¨Ô¼ 190MB£¬Ö»ĞèÒ»´Î£¬ÏÂÔØµ½±¾Ä¿Â¼ jdk\£©...
+    powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; $urls=@('https://mirrors.tuna.tsinghua.edu.cn/Adoptium/17/jdk/x64/windows/OpenJDK17U-jdk_x64_windows_hotspot_17.0.20.1_1.zip','https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jdk/hotspot/normal/eclipse?project=jdk'); foreach($u in $urls){ try { Invoke-WebRequest -Uri $u -OutFile jdk.zip -TimeoutSec 600; break } catch { Write-Host \"  Ô´²»¿ÉÓÃ£¬»»ÏÂÒ»¸ö\" } }; if (Test-Path jdk.zip) { Expand-Archive jdk.zip -DestinationPath jdk -Force; Remove-Item jdk.zip }"
+    for /d %%D in ("jdk\jdk-*") do if exist "%%D\bin\java.exe" set "JAVA_CMD=%%~fD\bin\java.exe"
 )
 if not defined JAVA_CMD (
-    echo [é”™è¯¯] JDK ä¸‹è½½/å®‰è£…å¤±è´¥ï¼Œè¯·æ‰‹åŠ¨å®‰è£… JDK 17 åé‡è¯•
+    echo [´íÎó] JDK ÏÂÔØ/°²×°Ê§°Ü£¬ÇëÊÖ¶¯°²×° JDK 17 ºóÖØÊÔ
     pause & exit /b 1
 )
-echo å·²æ‰¾åˆ° Java: !JAVA_CMD!
+echo ÒÑÕÒµ½ Java: !JAVA_CMD!
 
 if exist "kb-server.jar" goto :run
 
-echo [2/3] æœªæ‰¾åˆ° kb-server.jarï¼Œå‡†å¤‡æ„å»ºï¼ˆé¦–æ¬¡çº¦ 3-5 åˆ†é’Ÿï¼Œä¹‹åæ— éœ€å†æ„å»ºï¼‰...
+echo [2/3] Î´ÕÒµ½ kb-server.jar£¬×¼±¸¹¹½¨£¨Ê×´ÎÔ¼ 3-5 ·ÖÖÓ£¬Ö®ºóÎŞĞèÔÙ¹¹½¨£©...
 set "MVN_CMD="
 if exist "maven\bin\mvn.cmd" set "MVN_CMD=maven\bin\mvn.cmd"
-for /d %%D in ("maven\apache-maven-*") do if exist "%%D\bin\mvn.cmd" set "MVN_CMD=%%D\bin\mvn.cmd"
+for /d %%D in ("maven\apache-maven-*") do if exist "%%D\bin\mvn.cmd" set "MVN_CMD=%%~fD\bin\mvn.cmd"
 if not defined MVN_CMD (
-    echo ä¸‹è½½ Mavenï¼ˆæ¸…åé•œåƒï¼Œå¤±è´¥æ¢å®˜æ–¹æºï¼‰...
-    powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; $urls=@('https://mirrors.tuna.tsinghua.edu.cn/apache/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.zip','https://dlcdn.apache.org/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.zip'); foreach($u in $urls){ try { Invoke-WebRequest -Uri $u -OutFile maven.zip -TimeoutSec 300; break } catch { Write-Host \"  æºä¸å¯ç”¨ï¼Œæ¢ä¸‹ä¸€ä¸ª\" } }; if (Test-Path maven.zip) { Expand-Archive maven.zip -DestinationPath maven -Force; Remove-Item maven.zip }"
-    for /d %%D in ("maven\apache-maven-*") do if exist "%%D\bin\mvn.cmd" set "MVN_CMD=%%D\bin\mvn.cmd"
+    echo ÏÂÔØ Maven£¨Çå»ª¾µÏñ£¬Ê§°Ü»»¹Ù·½Ô´£©...
+    powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; $urls=@('https://mirrors.tuna.tsinghua.edu.cn/apache/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.zip','https://dlcdn.apache.org/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.zip'); foreach($u in $urls){ try { Invoke-WebRequest -Uri $u -OutFile maven.zip -TimeoutSec 300; break } catch { Write-Host \"  Ô´²»¿ÉÓÃ£¬»»ÏÂÒ»¸ö\" } }; if (Test-Path maven.zip) { Expand-Archive maven.zip -DestinationPath maven -Force; Remove-Item maven.zip }"
+    for /d %%D in ("maven\apache-maven-*") do if exist "%%D\bin\mvn.cmd" set "MVN_CMD=%%~fD\bin\mvn.cmd"
 )
 if not defined MVN_CMD (
-    echo [é”™è¯¯] Maven ä¸‹è½½å¤±è´¥
+    echo [´íÎó] Maven ÏÂÔØÊ§°Ü
     pause & exit /b 1
 )
 
-REM å¼ºåˆ¶ç”¨åŒ…å†… JDK æ„å»ºï¼šç³»ç»Ÿ JAVA_HOME å¯èƒ½æŒ‡å‘è¿‡æ—§çš„ Java
+REM Ç¿ÖÆÓÃ°üÄÚ JDK ¹¹½¨£ºÏµÍ³ JAVA_HOME ¿ÉÄÜÖ¸Ïò¹ı¾ÉµÄ Java
 if exist "jdk\bin\java.exe" set "JAVA_HOME=%cd%\jdk"
 for /d %%D in ("jdk\jdk-*") do set "JAVA_HOME=%%~fD"
 
-echo æ„å»ºä¸­...
-pushd ..
-call "!MVN_CMD!" -s mvn-settings.xml -q -DskipTests -Dmaven.repo.local="%cd%\portable\m2" package
+echo ¹¹½¨ÖĞ...
+pushd ..\server
+call "!MVN_CMD!" -s mvn-settings.xml -q -DskipTests -Dmaven.repo.local="%~dp0m2" package
 if errorlevel 1 (
     popd
-    echo [é”™è¯¯] æ„å»ºå¤±è´¥ï¼Œè¯·æ£€æŸ¥ç½‘ç»œåé‡è¯•
+    echo [´íÎó] ¹¹½¨Ê§°Ü£¬Çë¼ì²éÍøÂçºóÖØÊÔ
     pause & exit /b 1
 )
 popd
 copy /y "..\server\target\kb-server-0.1.0.jar" "kb-server.jar" >nul
 if not exist "kb-server.jar" (
-    echo [é”™è¯¯] æœªæ‰¾åˆ°æ„å»ºäº§ç‰© jar
+    echo [´íÎó] Î´ÕÒµ½¹¹½¨²úÎï jar
     pause & exit /b 1
 )
 
 :run
-echo [3/3] å¯åŠ¨çŸ¥è¯†åº“æœåŠ¡ï¼šhttp://localhost:39217ï¼ˆCtrl+C åœæ­¢ï¼‰
+echo [3/3] Æô¶¯ÖªÊ¶¿â·şÎñ£ºhttp://localhost:39217£¨Ctrl+C Í£Ö¹£©
 start "" powershell -NoProfile -Command "Start-Sleep 3; Start-Process 'http://localhost:39217'"
 if not exist tmp mkdir tmp
-"%JAVA_CMD%" -Djava.io.tmpdir="%cd%	mp" -jar kb-server.jar --server.port=39217
+"%JAVA_CMD%" -Djava.io.tmpdir="%cd%\tmp" -jar kb-server.jar --server.port=39217
 pause
