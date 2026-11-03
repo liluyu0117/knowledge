@@ -4,7 +4,7 @@ import { api } from '../api'
 import { preview } from '../store/preview'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, Document, Loading, Delete, Upload, PriceTag, Link } from '@element-plus/icons-vue'
+import { Folder, FolderAdd, Document, Loading, Delete, Upload, PriceTag, Link } from '@element-plus/icons-vue'
 
 const kbs = ref([])
 const currentId = ref('')
@@ -387,6 +387,10 @@ const upFiles = ref([])
 const upTags = ref([])
 const upBusy = ref(false)
 const fileInput = ref(null)
+const folderCreating = ref(false)   // 新建文件夹中
+const lastUploadFolder = ref('')    // 上次上传的目录（跨次记忆）
+const upProg = ref(null)            // 上传进度 {done,total,curName,percent}
+const dragOver = ref(false)         // 拖拽悬停高亮
 
 // el-select 把空串当成"未选择"，用哨兵值表示根目录
 const ROOT_DIR = '__root__'
@@ -405,47 +409,140 @@ const folderOptions = computed(() => {
 
 function openUpload() {
   if (!currentId.value) return
-  upFolder.value = ROOT_DIR
+  // 记住上次上传目录（localStorage 持久化，按知识库区分）
+  upFolder.value = localStorage.getItem('kb-up-folder:' + currentId.value) || ROOT_DIR
   upFiles.value = []
   upTags.value = []
   upDialog.value = true
 }
 
-function pickFiles(e) {
-  upFiles.value = [...(e.target.files || [])]
-  e.target.value = '' // 允许再次选择同一个文件
+/** 前端预校验：类型与大小，提前拦掉明显传不上去的 */
+function precheck(f) {
+  const okExt = ['docx', 'doc', 'pdf', 'xlsx', 'xls', 'pptx', 'ppt', 'md', 'markdown', 'txt', 'sql', 'yml', 'yaml', 'html', 'htm', 'csv', 'log', 'properties', 'ini', 'conf', 'java', 'py', 'ts', 'sh', 'bat']
+  const ext = (f.name.split('.').pop() || '').toLowerCase()
+  if (!okExt.includes(ext)) return `不支持的类型 .${ext}`
+  if (f.size > 200 * 1024 * 1024) return '超过 200MB 上限'
+  if (f.size === 0) return '空文件'
+  return ''
 }
 
+function addFiles(list) {
+  const bad = []
+  for (const f of list) {
+    const why = precheck(f)
+    if (why) { bad.push(`${f.name}：${why}`); continue }
+    if (upFiles.value.some((x) => x.name === f.name && x.size === f.size)) continue // 去重
+    upFiles.value.push(f)
+  }
+  if (bad.length) ElMessage.warning(bad.slice(0, 5).join('；'))
+}
+
+function pickFiles(e) {
+  addFiles([...(e.target.files || [])])
+  e.target.value = ''
+}
+
+function onDrop(e) {
+  dragOver.value = false
+  addFiles([...(e.dataTransfer?.files || [])])
+}
+
+function removePicked(i) {
+  upFiles.value.splice(i, 1)
+}
+
+/** 单文件 XHR 上传（可拿到进度） */
+function xhrUpload(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded, e.total) }
+    xhr.onload = () => {
+      try { resolve(JSON.parse(xhr.responseText)) }
+      catch { reject(new Error('响应解析失败')) }
+    }
+    xhr.onerror = () => reject(new Error('网络错误'))
+    xhr.send(file)
+  })
+}
+
+/** 新建文件夹：弹窗输入名称（可带子路径），建在当前知识库根目录下 */
+function newFolder() {
+  if (!currentId.value || folderCreating.value) return
+  ElMessageBox.prompt('输入文件夹名；也可以带子路径，如「上线方案/2026-11」', '新建文件夹', {
+    inputPlaceholder: '文件夹名（支持中文）',
+    confirmButtonText: '创建', cancelButtonText: '取消',
+    inputValidator: (v) => {
+      const t = (v || '').trim()
+      if (!t) return '请输入文件夹名'
+      if (/[\\:*?"<>|]/.test(t)) return '不能包含 \\ / : * ? " < > |'
+      return true
+    },
+  }).then(async ({ value }) => {
+    const t = value.trim().replace(/^[\/]+|[\/]+$/g, '')
+    folderCreating.value = true
+    try {
+      // 支持多级：逐级创建
+      const segs = t.split('/').filter(Boolean)
+      let cur = ''
+      for (const seg of segs) {
+        const parent = cur
+        cur = cur ? cur + '/' + seg : seg
+        const r = await api.post(`/api/kb/${currentId.value}/folder?path=${encodeURIComponent(parent)}&name=${encodeURIComponent(seg)}`)
+        if (!r.ok && !/已存在/.test(r.error || '')) { ElMessage.error(r.error || '创建失败'); return }
+      }
+      ElMessage.success('文件夹已创建')
+      await loadTree(currentId.value, true)
+    } catch (e) {
+      ElMessage.error('创建失败：' + (e.message || e))
+    } finally {
+      folderCreating.value = false
+    }
+  }).catch(() => {})
+}
+
+
 async function doUpload() {
-  if (!upFiles.value.length) { ElMessage.warning('请先选择文件'); return }
+  if (!upFiles.value.length || upBusy.value) return
   upBusy.value = true
+  const dir = upFolder.value === ROOT_DIR ? '' : upFolder.value
+  localStorage.setItem('kb-up-folder:' + currentId.value, upFolder.value)
+  upProg.value = { done: 0, total: upFiles.value.length, curName: '', percent: 0 }
   let ok = 0
   const errs = []
   for (const f of upFiles.value) {
-    const dir = upFolder.value === ROOT_DIR ? '' : upFolder.value
+    upProg.value.curName = f.name
+    upProg.value.percent = 0
     const url = `/api/kb/${currentId.value}/upload?folder=${encodeURIComponent(dir)}`
       + `&name=${encodeURIComponent(f.name)}`
       + (upTags.value.length ? `&tags=${encodeURIComponent(upTags.value.join(','))}` : '')
     try {
-      const res = await fetch(url, {
-        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f,
+      const j = await xhrUpload(url, f, (loaded, total) => {
+        upProg.value.percent = Math.round((loaded / total) * 100)
       })
-      const j = await res.json()
-      if (j.ok) ok++
+      if (j.ok) { ok++; upProg.value.done++ }
       else errs.push(`${f.name}：${j.error}`)
     } catch (e) {
-      errs.push(`${f.name}：${e}`)
+      errs.push(`${f.name}：${e.message || e}`)
     }
   }
   upBusy.value = false
-  upDialog.value = false
   await loadTree(currentId.value)
-  if (errs.length) {
+  if (!errs.length) {
+    upDialog.value = false
+    try {
+      await ElMessageBox.confirm(
+        `已上传 ${ok} 个文件到「${upFolder.value === ROOT_DIR ? '根目录' : upFolder.value}」。现在构建索引吗？`,
+        '上传完成', { confirmButtonText: '立即构建', cancelButtonText: '稍后自己构建', type: 'success' },
+      )
+      rebuildKb()
+    } catch { /* 用户选稍后 */ }
+  } else {
+    upProg.value = null
     ElMessageBox.alert(errs.slice(0, 8).join('<br>'), `上传 ${ok} 个成功，${errs.length} 个失败`, {
       dangerouslyUseHTMLString: true, confirmButtonText: '知道了',
     })
-  } else {
-    ElMessage.success(`已上传 ${ok} 个文件，点「构建索引」后进入检索`)
   }
 }
 
@@ -599,6 +696,9 @@ const failedList = computed(() => st.value?.last?.failed || [])
         </el-select>
         <el-button size="small" type="primary" plain :disabled="!currentId" @click="openUpload">
           <el-icon style="margin-right:4px"><Upload /></el-icon>上传文档
+        </el-button>
+        <el-button size="small" plain :disabled="!currentId || folderCreating" :loading="folderCreating" @click="newFolder">
+          <el-icon style="margin-right:4px"><FolderAdd /></el-icon>新建文件夹
         </el-button>
         <el-button size="small" plain :disabled="!currentId" @click="urlDialog = true">
           <el-icon style="margin-right:4px"><Link /></el-icon>网页接入
@@ -796,14 +896,28 @@ const failedList = computed(() => st.value?.last?.failed || [])
         </el-form-item>
         <el-form-item label="文件">
           <div style="width:100%">
-            <input ref="fileInput" type="file" multiple hidden @change="pickFiles" />
-            <el-button size="small" @click="fileInput.click()">选择文件…</el-button>
-            <div class="formhint">支持 docx / pdf / xlsx / pptx / md / txt / sql / html 等可解析类型，单个不超过 200MB</div>
+            <input ref="fileInput" type="file" multiple hidden
+                   accept=".docx,.doc,.pdf,.xlsx,.xls,.pptx,.ppt,.md,.markdown,.txt,.sql,.yml,.yaml,.html,.htm,.csv,.log,.properties,.ini,.conf,.java,.py,.ts,.sh,.bat"
+                   @change="pickFiles" />
+            <div class="dropzone" :class="{ over: dragOver }"
+                 @click="fileInput.click()"
+                 @dragover.prevent="dragOver = true"
+                 @dragleave.prevent="dragOver = false"
+                 @drop.prevent="onDrop">
+              <el-icon class="dzicon"><Upload /></el-icon>
+              <div>拖拽文件到这里，或 <span class="link">点击选择</span></div>
+              <div class="dzsub">支持 docx / pdf / xlsx / pptx / md / txt / sql / html 等，单个 ≤ 200MB</div>
+            </div>
             <div class="upfiles" v-if="upFiles.length">
-              <div v-for="f in upFiles" :key="f.name" class="upfile">
+              <div v-for="(f, i) in upFiles" :key="f.name + i" class="upfile">
                 <span class="upn">{{ f.name }}</span>
                 <span class="ups">{{ Math.max(1, Math.round(f.size / 1024)) }} KB</span>
+                <el-icon class="upx" @click="removePicked(i)"><Delete /></el-icon>
               </div>
+            </div>
+            <div v-if="upBusy && upProg" class="upprog">
+              <el-progress :percentage="upProg.percent" :stroke-width="8" />
+              <div class="upprog-t">正在上传 {{ upProg.done + 1 }}/{{ upProg.total }}：{{ upProg.curName }}</div>
             </div>
           </div>
         </el-form-item>
@@ -811,7 +925,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
       <template #footer>
         <el-button @click="upDialog = false">取消</el-button>
         <el-button type="primary" :loading="upBusy" :disabled="!upFiles.length" @click="doUpload">
-          上传{{ upFiles.length ? ` ${upFiles.length} 个` : '' }}
+          {{ upBusy ? `上传中 ${upProg?.done || 0}/${upProg?.total || 0}` : `上传${upFiles.length ? ` ${upFiles.length} 个` : ''}` }}
         </el-button>
       </template>
     </el-dialog>
@@ -1010,4 +1124,19 @@ const failedList = computed(() => st.value?.last?.failed || [])
 .urlrow .uinfo.fail{color:var(--el-color-danger)}
 /* 删除进行中的行内图标：置灰并禁用点击 */
 .del.busy{opacity:.35;pointer-events:none}
+/* 上传拖拽区 */
+.dropzone{border:1.5px dashed var(--el-border-color);border-radius:10px;padding:18px 10px;
+  text-align:center;cursor:pointer;transition:all var(--t-fast) var(--ease);color:var(--ink2);font-size:var(--fs-sm)}
+.dropzone:hover,.dropzone.over{border-color:var(--accent);background:var(--el-color-primary-light-9)}
+.dropzone .dzicon{font-size:22px;color:var(--ink3);margin-bottom:4px}
+.dropzone .link{color:var(--accent)}
+.dropzone .dzsub{font-size:var(--fs-2xs);color:var(--ink3);margin-top:4px}
+.upfile{display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:6px;font-size:var(--fs-xs)}
+.upfile:hover{background:var(--mist)}
+.upfile .upn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upfile .ups{color:var(--ink3)}
+.upfile .upx{cursor:pointer;color:var(--ink3)}
+.upfile .upx:hover{color:var(--el-color-danger)}
+.upprog{margin-top:6px}
+.upprog-t{font-size:var(--fs-2xs);color:var(--ink3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>

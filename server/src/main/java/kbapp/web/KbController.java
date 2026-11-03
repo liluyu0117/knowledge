@@ -418,6 +418,49 @@ public class KbController {
         return m;
     }
 
+    /**
+     * 在知识库内新建文件夹（物理目录，构建时按目录归档）。
+     * path 为父目录相对路径（空 = 根目录），name 为文件夹名。
+     */
+    @PostMapping("/{id}/folder")
+    public Map<String, Object> createFolder(@PathVariable String id,
+                                            @RequestParam(defaultValue = "") String path,
+                                            @RequestParam("name") String name) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        KbRegistry.KbEntry kb = registry.byId(id);
+        if (kb == null) { m.put("ok", false); m.put("error", "知识库不存在"); return m; }
+        Path root = registry.docsRoot(kb);
+        if (name == null || name.isBlank()) { m.put("ok", false); m.put("error", "文件夹名不能为空"); return m; }
+        if (name.contains("/") || name.contains("\\") || name.startsWith(".")) {
+            m.put("ok", false); m.put("error", "文件夹名不合法"); return m;
+        }
+        Path dir = root;
+        if (path != null && !path.isBlank()) {
+            String f = path.replace('\\', '/');
+            for (String part : f.split("/")) {
+                if (part.isBlank() || part.equals(".") || part.equals("..")) {
+                    m.put("ok", false); m.put("error", "父目录不合法"); return m;
+                }
+            }
+            dir = root.resolve(f).normalize();
+            if (!dir.startsWith(root) || !Files.isDirectory(dir)) {
+                m.put("ok", false); m.put("error", "父目录不存在"); return m;
+            }
+        }
+        Path target = dir.resolve(name).normalize();
+        if (!target.startsWith(root)) { m.put("ok", false); m.put("error", "路径不合法"); return m; }
+        if (Files.exists(target)) { m.put("ok", false); m.put("error", "同名文件或文件夹已存在"); return m; }
+        try {
+            Files.createDirectories(target);
+            m.put("ok", true);
+            m.put("path", root.relativize(target).toString().replace('\\', '/'));
+        } catch (IOException e) {
+            m.put("ok", false);
+            m.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+        return m;
+    }
+
     /** 删除知识库内的单个文件（只动副本，源目录不受影响）；删空后顺带清理空目录。 */
     @DeleteMapping("/{id}/file")
     public Map<String, Object> deleteFile(@PathVariable String id, @RequestParam("path") String relPath) {

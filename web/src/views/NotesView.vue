@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { api } from '../api'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { EditPen } from '@element-plus/icons-vue'
+import { EditPen, Delete } from '@element-plus/icons-vue'
 
 const notes = ref([])
 const currentId = ref('')
@@ -25,7 +25,7 @@ const lastSavedAt = ref('')
 const saveError = ref('')
 const manualSaved = ref(false)
 const creating = ref(false)    // 新建笔记前先落盘当前草稿
-const removing = ref(false)    // 删除笔记中
+const removingId = ref('')     // 正在删除的笔记 id
 const renamingId = ref('')     // 正在重命名的笔记 id
 
 const nowHM = () => new Date().toTimeString().slice(0, 8)
@@ -249,25 +249,34 @@ function renameDialog(n) {
 
 function remove() {
   if (!currentId.value) { ElMessage.warning('还没有创建这个笔记'); return }
-  ElMessageBox.confirm(`删除笔记「${title.value || '未命名笔记'}」？`, '删除笔记', {
-    type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
-  }).then(async () => {
-    removing.value = true
-    try {
-      await api.del('/api/notes/' + currentId.value)
-      ElMessage.success('笔记已删除')
+  removeNote({ id: currentId.value, title: title.value || '未命名笔记' })
+}
+
+/** 按笔记对象删除：侧栏与编辑器共用；删的是当前打开的笔记时清空编辑器 */
+async function removeNote(n) {
+  if (!n?.id || removingId.value) return
+  try {
+    await ElMessageBox.confirm(`删除笔记「${n.title}」？删除后不可恢复。`, '删除笔记', {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+    })
+  } catch { return }
+  removingId.value = n.id
+  try {
+    await api.del('/api/notes/' + n.id)
+    ElMessage.success('笔记已删除')
+    if (currentId.value === n.id) {
       currentId.value = ''
       title.value = ''
       content.value = ''
       dirty.value = false
       saveState.value = 'idle'
-      load()
-    } catch (e) {
-      ElMessage.error('删除失败：' + (e.message || e))
-    } finally {
-      removing.value = false
     }
-  }).catch(() => {})
+    load()
+  } catch (e) {
+    ElMessage.error('删除失败：' + (e.message || e))
+  } finally {
+    removingId.value = ''
+  }
 }
 
 onMounted(() => {
@@ -336,6 +345,9 @@ const rendered = computed(() => (type.value === 'md' ? mdToHtml(content.value) :
             <el-tooltip content="重命名" placement="top">
               <el-icon @click.stop="renameDialog(n)"><EditPen /></el-icon>
             </el-tooltip>
+            <el-tooltip content="删除" placement="top">
+              <el-icon class="del" :class="{ busy: removingId === n.id }" @click.stop="removeNote(n)"><Delete /></el-icon>
+            </el-tooltip>
           </span>
         </div>
       </div>
@@ -362,7 +374,7 @@ const rendered = computed(() => (type.value === 'md' ? mdToHtml(content.value) :
           <el-button size="small" :type="dirty ? 'primary' : 'default'" :loading="saveState === 'saving'" @click="persist(true)">
             {{ isDraft ? '保存为文件' : (dirty ? '保存' : '已保存') }}
           </el-button>
-          <el-button size="small" type="danger" plain :disabled="isDraft" :loading="removing" @click="remove">删除</el-button>
+          <el-button size="small" type="danger" plain :disabled="isDraft" :loading="removingId === currentId" @click="remove">删除</el-button>
         </div>
       </div>
       <div class="nbody">
@@ -398,6 +410,8 @@ const rendered = computed(() => (type.value === 'md' ? mdToHtml(content.value) :
 .nitem:hover .nops{opacity:1}
 .nops .el-icon{font-size:13px;color:var(--el-text-color-secondary)}
 .nops .el-icon:hover{color:var(--el-color-primary)}
+.nops .el-icon.del:hover{color:var(--el-color-danger)}
+.nops .el-icon.del.busy{opacity:.35;pointer-events:none}
 .nempty{padding:14px 10px;font-size:var(--fs-xs);color:var(--el-text-color-secondary);text-align:center}
 .nmain{display:flex;flex-direction:column;padding:0;overflow:hidden}
 .nbody{flex:1;display:flex;gap:10px;min-height:0;margin:0 var(--page-x) 10px}
