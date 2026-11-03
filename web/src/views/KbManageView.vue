@@ -504,6 +504,34 @@ function uploadTo(path) {
   upFolder.value = path === '' ? ROOT_DIR : path
 }
 
+/** 删除文件夹：空文件夹直接确认；里面有文件时二次确认（连同文件一起删） */
+async function removeFolder(n) {
+  if (removingPath.value) return
+  const count = n.fileCount || 0
+  const msg = count > 0
+    ? `文件夹「${n.name}」下有 ${count} 个文件。\n\n删除将把这些文件一并从知识库移除（源目录不受影响，索引在下次构建时清理）。确定删除？`
+    : `删除空文件夹「${n.name}」？`
+  try {
+    await ElMessageBox.confirm(msg, '删除文件夹', {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+    })
+  } catch { return }
+  removingPath.value = n.path
+  try {
+    const r = await api.del(`/api/kb/${currentId.value}/folder?path=${encodeURIComponent(n.path)}&confirm=true`)
+    if (r.ok) {
+      ElMessage.success(count > 0 ? `已删除文件夹及其中 ${count} 个文件` : '已删除空文件夹')
+      await loadTree(currentId.value, true)
+    } else {
+      ElMessage.error(r.error || '删除失败')
+    }
+  } catch (e) {
+    ElMessage.error('删除失败：' + (e.message || e))
+  } finally {
+    removingPath.value = ''
+  }
+}
+
 
 async function doUpload() {
   if (!upFiles.value.length || upBusy.value) return
@@ -850,6 +878,9 @@ const failedList = computed(() => st.value?.last?.failed || [])
                   </el-tooltip>
                   <el-tooltip content="上传文件到该目录" placement="top">
                     <el-icon @click.stop="uploadTo(n.path)"><Upload /></el-icon>
+                  </el-tooltip>
+                  <el-tooltip content="删除该文件夹（连同其中文件）" placement="top">
+                    <el-icon class="del" :class="{ busy: removingPath === n.path }" @click.stop="removeFolder(n)"><Delete /></el-icon>
                   </el-tooltip>
                 </span>
                 <span class="rowops" v-if="n.type === 'file'">

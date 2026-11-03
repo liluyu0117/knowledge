@@ -461,6 +461,56 @@ public class KbController {
         return m;
     }
 
+    /**
+     * 删除知识库内的文件夹（连同其中全部文件）。
+     * 目录非空且未带 confirm=true 时返回 needConfirm，由前端做二次确认。
+     */
+    @DeleteMapping("/{id}/folder")
+    public Map<String, Object> deleteFolder(@PathVariable String id,
+                                            @RequestParam("path") String relPath,
+                                            @RequestParam(defaultValue = "false") boolean confirm) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        KbRegistry.KbEntry kb = registry.byId(id);
+        if (kb == null) { m.put("ok", false); m.put("error", "知识库不存在"); return m; }
+        Path root = registry.docsRoot(kb);
+        if (relPath == null || relPath.isBlank()) { m.put("ok", false); m.put("error", "根目录不可删除"); return m; }
+        Path target = root.resolve(relPath.replace('\\', '/')).normalize();
+        if (!target.startsWith(root) || target.equals(root) || !Files.isDirectory(target)) {
+            m.put("ok", false); m.put("error", "文件夹不存在或路径不合法"); return m;
+        }
+        List<Path> files = new ArrayList<>();
+        try (var s = Files.walk(target)) {
+            s.filter(Files::isRegularFile).forEach(files::add);
+        } catch (IOException e) {
+            m.put("ok", false); m.put("error", e.toString()); return m;
+        }
+        if (!files.isEmpty() && !confirm) {
+            m.put("ok", false);
+            m.put("needConfirm", true);
+            m.put("fileCount", files.size());
+            m.put("error", "该文件夹包含 " + files.size() + " 个文件");
+            return m;
+        }
+        try {
+            // 先清这些文件的标签元数据，再自底向上删除目录树
+            for (Path f : files) {
+                String rel = root.relativize(f).toString().replace('\\', '/');
+                docMeta.removeDoc(kb.id(), rel);
+            }
+            try (var s = Files.walk(target)) {
+                s.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                    try { Files.delete(p); } catch (IOException ignored) { }
+                });
+            }
+            m.put("ok", true);
+            m.put("removed", files.size());
+        } catch (IOException e) {
+            m.put("ok", false);
+            m.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+        return m;
+    }
+
     /** 删除知识库内的单个文件（只动副本，源目录不受影响）；删空后顺带清理空目录。 */
     @DeleteMapping("/{id}/file")
     public Map<String, Object> deleteFile(@PathVariable String id, @RequestParam("path") String relPath) {
