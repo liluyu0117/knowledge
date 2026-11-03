@@ -65,14 +65,15 @@ onUnmounted(() => clearTimeout(statusTimer))
       <router-link to="/notes" class="rail-item" active-class="on">
         <el-icon><EditPen /></el-icon><span>笔记</span>
       </router-link>
-      <router-link to="/settings" class="rail-item" active-class="on">
-        <el-icon><Setting /></el-icon><span>设置</span>
-      </router-link>
       <router-link to="/retrievetest" class="rail-item" active-class="on">
         <el-icon><Search /></el-icon><span>调参</span>
       </router-link>
       <router-link to="/tools" class="rail-item" active-class="on">
         <el-icon><Tools /></el-icon><span>工具</span>
+      </router-link>
+      <div class="rail-spacer"></div>
+      <router-link to="/settings" class="rail-item" active-class="on">
+        <el-icon><Setting /></el-icon><span>设置</span>
       </router-link>
       <div class="rail-foot">
         <el-tag :type="statusType" effect="plain" size="small">{{ statusText }}</el-tag>
@@ -101,6 +102,8 @@ onUnmounted(() => clearTimeout(statusTimer))
   background:var(--accent);color:#fff;font-weight:700;font-size:16px;margin-bottom:10px;flex:0 0 auto;
 }
 .rail :deep(.rail-item){flex:0 0 auto}
-.rail-foot{margin-top:auto;padding:6px 6px 0;width:100%;text-align:center;flex:0 0 auto}
+/* 把「设置」与索引状态一起压到底部 */
+.rail-spacer{flex:1 1 auto;min-height:8px}
+.rail-foot{margin-top:2px;padding:6px 6px 0;width:100%;text-align:center;flex:0 0 auto}
 .rail-foot .el-tag{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
 </style>

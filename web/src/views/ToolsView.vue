@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { jsonrepair } from 'jsonrepair'
+import JsonTree from '../components/JsonTree.vue'
 import { Document, Timer, Key, CopyDocument } from '@element-plus/icons-vue'
 
 const tab = ref('json')
@@ -22,6 +23,10 @@ const jsonOut = ref('')
 const jsonErr = ref('')
 const jsonStat = ref('')
 const jsonFixNote = ref('')   // 自动修复的说明
+const jsonView = ref('tree')  // tree | text
+const jsonTree = ref(null)    // 解析后的对象，供折叠树渲染
+const treeDepth = ref(2)      // 树默认展开层数
+const treeKey = ref(0)        // 改展开层数时强制重建树
 
 /**
  * 修复字符串里未转义的引号。
@@ -155,12 +160,13 @@ function jsonRun(mode) {
   jsonErr.value = ''
   jsonFixNote.value = ''
   const src = jsonIn.value.trim()
-  if (!src) { jsonOut.value = ''; jsonStat.value = ''; return }
+  if (!src) { jsonOut.value = ''; jsonStat.value = ''; jsonTree.value = null; return }
 
   const r = parseLoose(src)
   if (r.error) {
     jsonOut.value = ''
     jsonStat.value = ''
+    jsonTree.value = null
     jsonErr.value = r.error + locate(src, r.error)
     return
   }
@@ -168,6 +174,7 @@ function jsonRun(mode) {
   jsonFixNote.value = r.note || ''
   const pretty = mode === 'min' ? JSON.stringify(obj) : JSON.stringify(obj, null, 2)
   jsonOut.value = pretty
+  jsonTree.value = obj
   const keys = countKeys(obj)
   const kind = Array.isArray(obj) && r.note ? ` · ${obj.length} 段` : ''
   jsonStat.value = `合法${kind} · ${pretty.split('\n').length} 行 · ${keys} 个键 · ${(new Blob([pretty]).size / 1024).toFixed(1)} KB`
@@ -177,6 +184,12 @@ function countKeys(o) {
   if (o === null || typeof o !== 'object') return 0
   if (Array.isArray(o)) return o.reduce((n, v) => n + countKeys(v), 0)
   return Object.keys(o).reduce((n, k) => n + 1 + countKeys(o[k]), 0)
+}
+
+/** 改变树的默认展开层数（重建树让节点状态重置） */
+function setTreeDepth(d) {
+  treeDepth.value = d
+  treeKey.value++
 }
 
 /** 键名按字母序递归排序，比对字段时好用 */
@@ -198,6 +211,7 @@ function jsonSort() {
 function jsonClear() {
   jsonIn.value = ''
   jsonFixNote.value = ''
+  jsonTree.value = null
   jsonOut.value = ''
   jsonErr.value = ''
   jsonStat.value = ''
@@ -349,7 +363,7 @@ const TABS = [
     <el-tabs v-model="tab" class="t-tabs">
       <!-- ── JSON ── -->
       <el-tab-pane label="JSON 格式化" name="json">
-        <div class="pane">
+        <div class="pane json-pane">
           <div class="cols">
             <div class="col">
               <div class="col-h">
@@ -360,17 +374,26 @@ const TABS = [
                 <el-button link size="small" @click="jsonSort">键排序</el-button>
                 <el-button link size="small" @click="jsonClear">清空</el-button>
               </div>
-              <el-input v-model="jsonIn" type="textarea" class="mono" resize="none"
+              <el-input v-model="jsonIn" type="textarea" class="mono fill" resize="none"
                         placeholder='粘贴 JSON，例如 {"a":1,"b":[2,3]}'
                         @input="jsonRun('pretty')" />
             </div>
             <div class="col">
               <div class="col-h">
                 <span>结果</span>
-                <span class="grow"></span>
+                <el-radio-group v-model="jsonView" size="small" class="viewsw">
+                  <el-radio-button value="tree">折叠树</el-radio-button>
+                  <el-radio-button value="text">文本</el-radio-button>
+                </el-radio-group>
+                <el-button v-if="jsonView === 'tree'" link size="small" @click="setTreeDepth(99)">全展开</el-button>
+                <el-button v-if="jsonView === 'tree'" link size="small" @click="setTreeDepth(0)">全收起</el-button>
                 <el-button link size="small" :disabled="!jsonOut" @click="copy(jsonOut, '结果已复制')">复制</el-button>
               </div>
-              <el-input :model-value="jsonOut" type="textarea" class="mono" resize="none" readonly
+              <div v-if="jsonView === 'tree'" class="tree-box">
+                <JsonTree v-if="jsonTree" :key="treeKey" :node="jsonTree" :depth="0" :default-open-depth="treeDepth" />
+                <div v-else class="tree-empty">左侧输入后，这里按层级折叠展示</div>
+              </div>
+              <el-input v-else :model-value="jsonOut" type="textarea" class="mono fill" resize="none" readonly
                         placeholder="格式化结果会显示在这里" />
             </div>
           </div>
@@ -481,10 +504,25 @@ const TABS = [
 </template>
 
 <style scoped>
-.tools{display:flex;flex-direction:column;padding:0;overflow:auto}
-.t-head{display:flex;align-items:baseline;gap:12px;padding:var(--page-y) var(--page-x) 0;flex-wrap:wrap}
-.t-tabs{padding:8px var(--page-x) 20px;flex:1}
-.pane{display:flex;flex-direction:column;gap:14px;padding-top:6px}
+/* 页面整体撑满视口，JSON 区左右两栏占满剩余高度 */
+.tools{display:flex;flex-direction:column;padding:0;overflow:hidden;height:100%}
+.t-head{display:flex;align-items:baseline;gap:12px;padding:var(--page-y) var(--page-x) 0;flex-wrap:wrap;flex:0 0 auto}
+.t-tabs{padding:6px var(--page-x) 12px;flex:1;min-height:0;display:flex;flex-direction:column}
+.t-tabs :deep(.el-tabs__content){flex:1;min-height:0}
+.t-tabs :deep(.el-tab-pane){height:100%}
+.pane{display:flex;flex-direction:column;gap:12px;padding-top:6px}
+/* JSON 面板吃满高度 */
+.pane.json-pane{height:100%;min-height:0}
+.json-pane .foot{flex:0 0 auto}
+.json-pane .cols{flex:1;min-height:0}
+.json-pane .col{min-height:0}
+.json-pane .fill{flex:1;min-height:0}
+.json-pane .fill :deep(.el-textarea),
+.json-pane .fill :deep(.el-textarea__inner){height:100%}
+.tree-box{flex:1;min-height:0;overflow:auto;background:var(--card);border:1px solid var(--line);
+  border-radius:8px;padding:8px 6px}
+.tree-empty{color:var(--ink3);font-size:var(--fs-xs);padding:10px}
+.viewsw{margin-left:auto;margin-right:8px}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media (max-width: 1100px){ .cols{grid-template-columns:1fr} }
 .col,.block{display:flex;flex-direction:column;gap:8px;background:var(--card);border:1px solid var(--line);
@@ -493,7 +531,7 @@ const TABS = [
 .col-h{display:flex;align-items:center;gap:4px;font-size:var(--fs-sm);font-weight:600;color:var(--ink2)}
 .grow{flex:1}
 .mono :deep(.el-textarea__inner){font-family:var(--mono);font-size:var(--fs-sm);line-height:1.65}
-.col .mono :deep(.el-textarea__inner){height:340px}
+.col .mono :deep(.el-textarea__inner){height:100%}
 .foot{padding:0 2px;display:flex;flex-direction:column;gap:4px}
 .fixnote{font-size:var(--fs-2xs);color:var(--el-color-warning);line-height:1.5}
 .now-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
