@@ -7,6 +7,33 @@
 set -e
 cd "$(dirname "$0")"
 
+# ---- 启动前自清理：端口已被占用则先停掉旧服务（只处理占用该端口的进程）----
+PORT=39217
+OLD_PID=""
+if command -v lsof >/dev/null 2>&1; then
+    OLD_PID="$(lsof -ti tcp:$PORT 2>/dev/null | head -1)"
+else
+    OLD_PID="$(netstat -ano 2>/dev/null | grep -E "[:.]$PORT[[:space:]]+.*LISTENING" | awk '{print $NF}' | head -1)"
+fi
+if [ -n "$OLD_PID" ]; then
+    echo "[0/3] 端口 $PORT 已被进程 $OLD_PID 占用，先停止旧服务..."
+    if command -v tasklist >/dev/null 2>&1; then
+        if tasklist //FI "PID eq $OLD_PID" 2>/dev/null | grep -qi "java"; then
+            taskkill //PID "$OLD_PID" //F >/dev/null 2>&1
+        else
+            echo "[错误] 端口 $PORT 被非 Java 进程占用，请手动关闭后重试"; exit 1
+        fi
+    else
+        COMM="$(ps -p "$OLD_PID" -o comm= 2>/dev/null)"
+        case "$COMM" in
+            *java*) kill "$OLD_PID" 2>/dev/null || true ;;
+            *) echo "[错误] 端口 $PORT 被 $COMM 占用，请手动关闭后重试"; exit 1 ;;
+        esac
+    fi
+    sleep 2
+    echo "旧服务已停止"
+fi
+
 OS="$(uname -s)"; ARCH="$(uname -m)"
 
 find_java() {
@@ -106,4 +133,4 @@ echo "[3/3] 启动知识库服务：http://localhost:39217（Ctrl+C 停止）"
     || explorer.exe http://localhost:39217 2>/dev/null \
     || true) &
 mkdir -p tmp
-exec "$JAVA" -Djava.io.tmpdir="$(pwd)/tmp" -jar kb-server.jar --server.port=39217
+exec "$JAVA" -Djava.io.tmpdir="$(pwd)/tmp" -jar kb-server.jar --server.port=$PORT

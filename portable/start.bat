@@ -9,6 +9,23 @@ REM  首次运行会自动：下载 JDK 17 → 下载 Maven → 构建服务 jar
 REM  之后每次运行直接启动，数据目录为本目录下的 .kb\
 REM ══════════════════════════════════════════════════════════
 
+rem ---- 启动前自清理：端口已被占用则先停掉旧服务（只认占用该端口的进程）----
+set "PORT=39217"
+set "OLD_PID="
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":%PORT%" ^| findstr "LISTENING"') do set "OLD_PID=%%P"
+if defined OLD_PID (
+    echo [0/3] 端口 %PORT% 已被进程 !OLD_PID! 占用，先停止旧服务...
+    tasklist /fi "PID eq !OLD_PID!" 2>nul | findstr /i "java.exe" >nul
+    if errorlevel 1 (
+        echo [错误] 端口 %PORT% 被非 Java 进程占用，请手动关闭后重试
+        pause
+        exit /b 1
+    )
+    taskkill /PID !OLD_PID! /F >nul 2>&1
+    ping -n 3 127.0.0.1 >nul
+    echo 旧服务已停止
+)
+
 set "JAVA_CMD="
 if exist "jdk\bin\java.exe" set "JAVA_CMD=jdk\bin\java.exe"
 for /d %%D in ("jdk\jdk-*") do if exist "%%D\bin\java.exe" set "JAVA_CMD=%%~fD\bin\java.exe"
@@ -66,5 +83,5 @@ if not exist "kb-server.jar" (
 echo [3/3] 启动知识库服务：http://localhost:39217（Ctrl+C 停止）
 start "" powershell -NoProfile -Command "Start-Sleep 3; Start-Process 'http://localhost:39217'"
 if not exist tmp mkdir tmp
-"%JAVA_CMD%" -Djava.io.tmpdir="%cd%\tmp" -jar kb-server.jar --server.port=39217
+"%JAVA_CMD%" -Djava.io.tmpdir="%cd%\tmp" -jar kb-server.jar --server.port=%PORT%
 pause
