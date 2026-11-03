@@ -34,7 +34,7 @@ public class McpInfoController {
     private final int appPort;
 
     public McpInfoController(ConfigService config, ToolCallbackProvider toolProvider,
-                             @Value("${local.server.port:${server.port:8080}}") int appPort) {
+                             @Value("${local.server.port:${server.port:39217}}") int appPort) {
         this.config = config;
         this.toolProvider = toolProvider;
         this.appPort = appPort;

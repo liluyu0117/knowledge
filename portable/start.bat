@@ -63,8 +63,8 @@ if not exist "kb-server.jar" (
 )
 
 :run
-echo [3/3] 启动知识库服务：http://localhost:8080（Ctrl+C 停止）
-start "" powershell -NoProfile -Command "Start-Sleep 3; Start-Process 'http://localhost:8080'"
+echo [3/3] 启动知识库服务：http://localhost:39217（Ctrl+C 停止）
+start "" powershell -NoProfile -Command "Start-Sleep 3; Start-Process 'http://localhost:39217'"
 if not exist tmp mkdir tmp
-"%JAVA_CMD%" -Djava.io.tmpdir="%cd%	mp" -jar kb-server.jar --server.port=8080
+"%JAVA_CMD%" -Djava.io.tmpdir="%cd%	mp" -jar kb-server.jar --server.port=39217
 pause

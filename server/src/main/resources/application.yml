@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 39217
   # 反代（nginx / cpolar 等）下让 Settings 页展示的 MCP 地址用对外协议与域名
   forward-headers-strategy: framework
 

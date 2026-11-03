@@ -99,11 +99,11 @@ if [ ! -f kb-server.jar ]; then
     cp ../server/target/kb-server-0.1.0.jar kb-server.jar
 fi
 
-echo "[3/3] 启动知识库服务：http://localhost:8080（Ctrl+C 停止）"
+echo "[3/3] 启动知识库服务：http://localhost:39217（Ctrl+C 停止）"
 (sleep 3
-    xdg-open http://localhost:8080 2>/dev/null \
-    || open http://localhost:8080 2>/dev/null \
-    || explorer.exe http://localhost:8080 2>/dev/null \
+    xdg-open http://localhost:39217 2>/dev/null \
+    || open http://localhost:39217 2>/dev/null \
+    || explorer.exe http://localhost:39217 2>/dev/null \
     || true) &
 mkdir -p tmp
-exec "$JAVA" -Djava.io.tmpdir="$(pwd)/tmp" -jar kb-server.jar --server.port=8080
+exec "$JAVA" -Djava.io.tmpdir="$(pwd)/tmp" -jar kb-server.jar --server.port=39217

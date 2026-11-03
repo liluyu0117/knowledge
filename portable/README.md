@@ -14,7 +14,7 @@ bash start.sh         （Linux / macOS / Git Bash）
 1. 下载 JDK 17（Adoptium，约 190MB）
 2. 下载 Maven（清华镜像）
 3. 构建服务 jar（依赖走阿里镜像，约 3-5 分钟）
-4. 启动服务并打开浏览器 http://localhost:8080
+4. 启动服务并打开浏览器 http://localhost:39217
 
 之后每次运行直接启动（秒开）。
 
@@ -37,6 +37,6 @@ bash start.sh         （Linux / macOS / Git Bash）
 
 ## 常见问题
 
-- **8080 被占用**：改启动命令端口，如 `start.bat` 里 `java -jar kb-server.jar --server.port=8081`
+- **39217 被占用**：改启动命令端口，如 `start.bat` 里 `java -jar kb-server.jar --server.port=8081`
 - **下载 JDK 慢**：可手动从 https://adoptium.net 下载 JDK 17，解压到本目录 `jdk\`（Windows）/ `jdk/` 下
 - **更新服务版本**：`git pull` 后删掉本目录的 `kb-server.jar`，再运行脚本会自动重新构建

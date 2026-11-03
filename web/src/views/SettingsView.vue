@@ -20,7 +20,7 @@ let uidSeq = 0
 const newUid = () => 'pv' + (++uidSeq)
 
 const mcpEnabled = ref(true)
-const mcpInfo = ref({ toolCount: 0, tools: [], sseUrl: 'http://localhost:8080/sse', messageEndpoint: '' })
+const mcpInfo = ref({ toolCount: 0, tools: [], sseUrl: 'http://localhost:39217/sse', messageEndpoint: '' })
 const autoMinutes = ref(0)
 const apiCfg = ref({ enabled: false, key: '' })
 const usage = ref(null)
@@ -112,11 +112,11 @@ const usageTiles = computed(() => {
 })
 
 const curlExample = computed(() => {
-  // 开发期页面在 5173，接口在 8080；生产由 8080 托管，直接用当前 origin
+  // 开发期页面在 5173，接口在 39217；生产由 39217 托管，直接用当前 origin
   const origin = typeof location === 'undefined'
-    ? 'http://localhost:8080'
-    : (location.port && location.port !== '8080'
-        ? location.protocol + '//' + location.hostname + ':8080'
+    ? 'http://localhost:39217'
+    : (location.port && location.port !== '39217'
+        ? location.protocol + '//' + location.hostname + ':39217'
         : location.origin)
   return `curl -H "X-API-Key: ${apiCfg.value.key || 'YOUR_KEY'}" \\\n  "${origin}/api/v1/search?q=上线流程&kbId=YOUR_KB_ID&topK=5"`
 })
