@@ -468,9 +468,11 @@ function xhrUpload(url, file, onProgress) {
 }
 
 /** 新建文件夹：弹窗输入名称（可带子路径），建在当前知识库根目录下 */
-function newFolder() {
+/** 在指定目录下新建文件夹（parentPath 为空 = 根目录）；创建后自动展开父目录 */
+function newFolderIn(parentPath) {
   if (!currentId.value || folderCreating.value) return
-  ElMessageBox.prompt('输入文件夹名；也可以带子路径，如「上线方案/2026-11」', '新建文件夹', {
+  const where = parentPath ? `「${parentPath}」下` : '根目录下'
+  ElMessageBox.prompt(`在${where}新建文件夹`, '新建文件夹', {
     inputPlaceholder: '文件夹名（支持中文）',
     confirmButtonText: '创建', cancelButtonText: '取消',
     inputValidator: (v) => {
@@ -480,19 +482,13 @@ function newFolder() {
       return true
     },
   }).then(async ({ value }) => {
-    const t = value.trim().replace(/^[\/]+|[\/]+$/g, '')
+    const name = value.trim()
     folderCreating.value = true
     try {
-      // 支持多级：逐级创建
-      const segs = t.split('/').filter(Boolean)
-      let cur = ''
-      for (const seg of segs) {
-        const parent = cur
-        cur = cur ? cur + '/' + seg : seg
-        const r = await api.post(`/api/kb/${currentId.value}/folder?path=${encodeURIComponent(parent)}&name=${encodeURIComponent(seg)}`)
-        if (!r.ok && !/已存在/.test(r.error || '')) { ElMessage.error(r.error || '创建失败'); return }
-      }
+      const r = await api.post(`/api/kb/${currentId.value}/folder?path=${encodeURIComponent(parentPath)}&name=${encodeURIComponent(name)}`)
+      if (!r.ok && !/已存在/.test(r.error || '')) { ElMessage.error(r.error || '创建失败'); return }
       ElMessage.success('文件夹已创建')
+      if (parentPath) expanded.value[parentPath] = true
       await loadTree(currentId.value, true)
     } catch (e) {
       ElMessage.error('创建失败：' + (e.message || e))
@@ -500,6 +496,12 @@ function newFolder() {
       folderCreating.value = false
     }
   }).catch(() => {})
+}
+
+/** 从目录行的按钮直接发起上传，目录已预选 */
+function uploadTo(path) {
+  openUpload()
+  upFolder.value = path === '' ? ROOT_DIR : path
 }
 
 
@@ -697,9 +699,6 @@ const failedList = computed(() => st.value?.last?.failed || [])
         <el-button size="small" type="primary" plain :disabled="!currentId" @click="openUpload">
           <el-icon style="margin-right:4px"><Upload /></el-icon>上传文档
         </el-button>
-        <el-button size="small" plain :disabled="!currentId || folderCreating" :loading="folderCreating" @click="newFolder">
-          <el-icon style="margin-right:4px"><FolderAdd /></el-icon>新建文件夹
-        </el-button>
         <el-button size="small" plain :disabled="!currentId" @click="urlDialog = true">
           <el-icon style="margin-right:4px"><Link /></el-icon>网页接入
         </el-button>
@@ -805,6 +804,20 @@ const failedList = computed(() => st.value?.last?.failed || [])
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
         <el-tab-pane label="文件树" name="tree">
           <div v-loading="treeLoading" class="treebox">
+            <div class="tnode rootrow" title="知识库根目录">
+              <span class="caret">▾</span>
+              <el-icon class="tic"><Folder /></el-icon>
+              <span class="nm">根目录</span>
+              <span class="cnt"></span>
+              <span class="rowops">
+                <el-tooltip content="在根目录新建文件夹" placement="top">
+                  <el-icon @click.stop="newFolderIn('')"><FolderAdd /></el-icon>
+                </el-tooltip>
+                <el-tooltip content="上传文件到根目录" placement="top">
+                  <el-icon @click.stop="uploadTo('')"><Upload /></el-icon>
+                </el-tooltip>
+              </span>
+            </div>
             <div class="tree">
               <div v-for="n in flatTree" :key="n.type + n.path" class="tnode"
                    :class="{ folder: n.type === 'folder', more: n.type === 'more' }"
@@ -830,6 +843,14 @@ const failedList = computed(() => st.value?.last?.failed || [])
                 <span class="cnt" v-if="n.type !== 'more'">
                   <template v-if="n.type === 'folder'">{{ n.fileCount || 0 }} 文件<template v-if="n.chunkSum"> · {{ n.chunkSum }} 块</template></template>
                   <template v-else-if="n.chunkCount">{{ n.chunkCount }} 分块</template>
+                </span>
+                <span class="rowops" v-if="n.type === 'folder'">
+                  <el-tooltip content="在此目录下新建文件夹" placement="top">
+                    <el-icon @click.stop="newFolderIn(n.path)"><FolderAdd /></el-icon>
+                  </el-tooltip>
+                  <el-tooltip content="上传文件到该目录" placement="top">
+                    <el-icon @click.stop="uploadTo(n.path)"><Upload /></el-icon>
+                  </el-tooltip>
                 </span>
                 <span class="rowops" v-if="n.type === 'file'">
                   <el-tooltip content="编辑标签" placement="top">
