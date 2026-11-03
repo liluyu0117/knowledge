@@ -1,7 +1,8 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Document, Timer, Key, CopyDocument, Delete } from '@element-plus/icons-vue'
+import { jsonrepair } from 'jsonrepair'
+import { Document, Timer, Key, CopyDocument } from '@element-plus/icons-vue'
 
 const tab = ref('json')
 
@@ -20,6 +21,124 @@ const jsonIn = ref('')
 const jsonOut = ref('')
 const jsonErr = ref('')
 const jsonStat = ref('')
+const jsonFixNote = ref('')   // 自动修复的说明
+
+/**
+ * 修复字符串里未转义的引号。
+ * 真实场景：后端把数组 toString 进字符串却没转义，例如
+ *   "dealCode":"["wx-yindy", "wx-zhou"]"   →   "dealCode":"[\"wx-yindy\", \"wx-zhou\"]"
+ * 两种处理：
+ *  1. 值以 [ 或 { 开头（被包裹的数组/对象）→ 用括号配平找真正的结束引号，中间的引号全转义
+ *  2. 普通字符串 → 引号后紧跟 , } : 才算结束，否则当作内容转义
+ */
+function fixQuotes(src, closers) {
+  let out = ''
+  let inStr = false
+  let fixed = 0
+  let bracketMode = false
+  let depth = 0
+  let first = false
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (!inStr) {
+      out += c
+      if (c === '"') { inStr = true; first = true; bracketMode = false; depth = 0 }
+      continue
+    }
+    if (c === '\\') { out += c + (src[i + 1] ?? ''); i++; continue }
+
+    if (first) {
+      first = false
+      if (c === '[' || c === '{') { bracketMode = true; depth = 1; out += c; continue }
+    }
+    if (bracketMode) {
+      if (c === '[' || c === '{') { depth++; out += c; continue }
+      if (c === ']' || c === '}') { depth--; out += c; continue }
+      if (c === '"') {
+        if (depth === 0) { out += c; inStr = false; bracketMode = false }
+        else { out += '\\"'; fixed++ }
+        continue
+      }
+      out += c
+      continue
+    }
+    if (c === '"') {
+      let j = i + 1
+      while (j < src.length && /\s/.test(src[j])) j++
+      const next = src[j]
+      if (next === undefined || closers.includes(next)) { out += c; inStr = false }
+      else { out += '\\"'; fixed++ }
+      continue
+    }
+    out += c
+  }
+  return { text: out, fixed }
+}
+
+/** 把首尾相接的多段 JSON（{...}{...} 或 {...}\n{...}）拆成多段 */
+function splitTopLevel(src) {
+  const parts = []
+  let depth = 0
+  let start = -1
+  let inStr = false
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (inStr) {
+      if (c === '\\') { i++; continue }
+      if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') { inStr = true; if (start < 0) start = i; continue }
+    if (c === '{' || c === '[') { if (depth === 0) start = i; depth++; continue }
+    if (c === '}' || c === ']') {
+      depth--
+      if (depth === 0 && start >= 0) { parts.push(src.slice(start, i + 1)); start = -1 }
+      continue
+    }
+  }
+  return parts
+}
+
+/** 把一段文本按顶层值拆开逐段解析，成功返回合并数组 */
+function tryMulti(text, note) {
+  const parts = splitTopLevel(text)
+  if (parts.length < 2) return null
+  const objs = []
+  for (const p of parts) {
+    try { objs.push(JSON.parse(p)) } catch { return null }
+  }
+  return { obj: objs, note: note.replace('{n}', String(objs.length)) }
+}
+
+/** 依次尝试：原生解析 → 修未转义引号 → 拆分首尾相接的多段 → jsonrepair 兜底 */
+function parseLoose(raw) {
+  const attempts = []
+  try { return { obj: JSON.parse(raw), note: '' } } catch (e) { attempts.push(e.message) }
+
+  // 1) 先修未转义引号：修完可能是单段，也可能是多段（两段脏数据相接时两者都要做）
+  for (const closers of [[',', '}', ':'], [',', '}', ':', ']']]) {
+    const { text, fixed } = fixQuotes(raw, closers)
+    if (!fixed) continue
+    try {
+      return { obj: JSON.parse(text), note: `已自动转义 ${fixed} 处未闭合的引号（原值是塞在字符串里的数组）` }
+    } catch (e) { attempts.push(e.message) }
+    const m = tryMulti(text, `已转义 ${fixed} 处未闭合的引号，并识别出 {n} 段首尾相接的 JSON，已合并成数组`)
+    if (m) return m
+  }
+
+  // 2) 文本本身干净，只是多段相接
+  const m2 = tryMulti(raw, `识别为 {n} 段首尾相接的 JSON，已合并成数组`)
+  if (m2) return m2
+
+  // 3) 宽松修复尾逗号、单引号、缺引号键等
+  try {
+    const fixed = jsonrepair(raw)
+    const o = JSON.parse(fixed)
+    return { obj: o, note: '已用宽松模式修复（尾逗号 / 单引号 / 缺引号键等）' }
+  } catch { /* 落到下面报原始错误 */ }
+
+  return { error: attempts[attempts.length - 1] || '无法解析' }
+}
 
 /** 从 JSON.parse 报错里推算出错的行列，便于定位 */
 function locate(text, msg) {
@@ -34,21 +153,24 @@ function locate(text, msg) {
 
 function jsonRun(mode) {
   jsonErr.value = ''
+  jsonFixNote.value = ''
   const src = jsonIn.value.trim()
   if (!src) { jsonOut.value = ''; jsonStat.value = ''; return }
-  try {
-    const obj = JSON.parse(src)
-    const pretty = mode === 'min'
-      ? JSON.stringify(obj)
-      : JSON.stringify(obj, null, 2)
-    jsonOut.value = pretty
-    const keys = countKeys(obj)
-    jsonStat.value = `合法 · ${pretty.split('\n').length} 行 · ${keys} 个键 · ${(new Blob([pretty]).size / 1024).toFixed(1)} KB`
-  } catch (e) {
+
+  const r = parseLoose(src)
+  if (r.error) {
     jsonOut.value = ''
     jsonStat.value = ''
-    jsonErr.value = e.message + locate(src, e.message)
+    jsonErr.value = r.error + locate(src, r.error)
+    return
   }
+  const obj = r.obj
+  jsonFixNote.value = r.note || ''
+  const pretty = mode === 'min' ? JSON.stringify(obj) : JSON.stringify(obj, null, 2)
+  jsonOut.value = pretty
+  const keys = countKeys(obj)
+  const kind = Array.isArray(obj) && r.note ? ` · ${obj.length} 段` : ''
+  jsonStat.value = `合法${kind} · ${pretty.split('\n').length} 行 · ${keys} 个键 · ${(new Blob([pretty]).size / 1024).toFixed(1)} KB`
 }
 
 function countKeys(o) {
@@ -59,25 +181,23 @@ function countKeys(o) {
 
 /** 键名按字母序递归排序，比对字段时好用 */
 function jsonSort() {
-  try {
-    const obj = JSON.parse(jsonIn.value.trim() || '{}')
-    const sortObj = (v) => {
-      if (Array.isArray(v)) return v.map(sortObj)
-      if (v && typeof v === 'object') {
-        return Object.keys(v).sort().reduce((acc, k) => { acc[k] = sortObj(v[k]); return acc }, {})
-      }
-      return v
+  const r = parseLoose(jsonIn.value.trim() || '{}')
+  if (r.error) { jsonErr.value = '不是合法 JSON：' + r.error; return }
+  const sortObj = (v) => {
+    if (Array.isArray(v)) return v.map(sortObj)
+    if (v && typeof v === 'object') {
+      return Object.keys(v).sort().reduce((acc, k) => { acc[k] = sortObj(v[k]); return acc }, {})
     }
-    jsonIn.value = JSON.stringify(sortObj(obj), null, 2)
-    jsonRun('pretty')
-    ElMessage.success('已按键名排序')
-  } catch (e) {
-    jsonErr.value = '不是合法 JSON：' + e.message
+    return v
   }
+  jsonIn.value = JSON.stringify(sortObj(r.obj), null, 2)
+  jsonRun('pretty')
+  ElMessage.success('已按键名排序')
 }
 
 function jsonClear() {
   jsonIn.value = ''
+  jsonFixNote.value = ''
   jsonOut.value = ''
   jsonErr.value = ''
   jsonStat.value = ''
@@ -258,6 +378,7 @@ const TABS = [
             <el-text v-if="jsonErr" size="small" type="danger">✗ {{ jsonErr }}</el-text>
             <el-text v-else-if="jsonStat" size="small" type="success">✓ {{ jsonStat }}</el-text>
             <el-text v-else size="small" type="info">输入后自动校验并格式化</el-text>
+            <div v-if="jsonFixNote" class="fixnote">⚠ {{ jsonFixNote }}，请核对结果</div>
           </div>
         </div>
       </el-tab-pane>
@@ -373,7 +494,8 @@ const TABS = [
 .grow{flex:1}
 .mono :deep(.el-textarea__inner){font-family:var(--mono);font-size:var(--fs-sm);line-height:1.65}
 .col .mono :deep(.el-textarea__inner){height:340px}
-.foot{padding:0 2px}
+.foot{padding:0 2px;display:flex;flex-direction:column;gap:4px}
+.fixnote{font-size:var(--fs-2xs);color:var(--el-color-warning);line-height:1.5}
 .now-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .big{font-size:var(--fs-lg);font-weight:600;color:var(--ink);letter-spacing:.02em}
 .sub{font-size:var(--fs-2xs);color:var(--ink3)}
