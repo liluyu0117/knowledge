@@ -81,8 +81,29 @@ fi
 [ -z "$JAVA" ] && { echo "[错误] JDK 安装失败，请手动安装 JDK 17"; exit 1; }
 echo "已找到 Java: $JAVA"
 
-if [ ! -f kb-server.jar ]; then
-    echo "[2/3] 未找到 kb-server.jar，准备构建（首次约 3-5 分钟，之后无需再构建）..."
+# ---- 构建判定：jar 不存在，或 jar 内没有前端页面（static/index.html）----
+NEED_BUILD=0
+[ -f kb-server.jar ] || NEED_BUILD=1
+if [ -f kb-server.jar ] && [ "$NEED_BUILD" = "0" ]; then
+    # 读取失败（如 jar 被占用）时保守跳过检测，避免每次启动都重建
+    LIST="$(unzip -l kb-server.jar 2>/dev/null)"
+    if [ -n "$LIST" ] && ! echo "$LIST" | grep -q "classes/static/index.html"; then
+        if [ -f ../server/src/main/resources/static/index.html ]; then
+            echo "[提示] 现有 jar 内没有前端页面，将重新构建（含前端）"
+            NEED_BUILD=1
+        else
+            echo "[警告] jar 内没有前端页面，且前端产物不存在，页面将无法访问"
+            echo "        请先在 web 目录执行 npm run build，再删除 kb-server.jar 重试"
+        fi
+    fi
+fi
+
+if [ "$NEED_BUILD" = "1" ]; then
+    if [ ! -f ../server/src/main/resources/static/index.html ] && [ -d ../web/node_modules ]; then
+        echo "前端尚未构建，正在构建前端（约 30 秒）..."
+        (cd ../web && npm run build)
+    fi
+    echo "[2/3] 准备构建服务 jar（首次约 3-5 分钟，之后无需再构建）..."
     MVN=""
     [ -x "maven/bin/mvn" ] && MVN="maven/bin/mvn"
     for d in maven/apache-maven-*/; do
