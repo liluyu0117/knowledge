@@ -510,14 +510,12 @@ const rendered = computed(() => (type.value === 'md'
           </div>
           <div v-for="n in g.items" :key="n.id" class="nitem"
                :class="{ on: n.id === currentId, dragging: dragNoteId === n.id }" :style="g.folder ? 'padding-left:14px' : ''"
-               draggable="true" @dragstart="onDragStart(n, $event)" @dragend="dragNoteId = ''"
                @click="select(n)">
-          <span class="nt" :title="n.title + '.' + extOf(n.type)" @dblclick.stop="renameDialog(n)">{{ n.title }}</span>
+          <span class="drag-handle" draggable="true" title="拖动到文件夹分组即可移动"
+                @dragstart="onDragStart(n, $event)" @dragend="dragNoteId = ''">⠿</span>
+          <span class="nt" :title="n.title + '.' + extOf(n.type) + '（双击可重命名）'" @dblclick.stop="renameDialog(n)">{{ n.title }}</span>
           <div class="d">{{ extOf(n.type) }} · {{ n.updatedAt.slice(5, 16).replace('T', ' ') }}</div>
           <span class="nops">
-            <el-tooltip content="重命名" placement="top">
-              <el-icon @click.stop="renameDialog(n)"><EditPen /></el-icon>
-            </el-tooltip>
             <el-dropdown trigger="click" popper-class="move-dd"
                         @command="(f) => onMoveCommand(f, n)" @click.stop>
               <el-tooltip content="移动到文件夹" placement="top">
@@ -619,19 +617,24 @@ const rendered = computed(() => (type.value === 'md'
 .ngwrap{border-radius:8px;transition:background var(--t-fast) var(--ease),outline var(--t-fast) var(--ease)}
 .ngwrap.dropt{background:var(--accent-soft);outline:1.5px dashed var(--accent)}
 .nitem.dragging{opacity:.4}
-.nitem[draggable="true"]{cursor:grab}
-.nitem[draggable="true"]:active{cursor:grabbing}
-.nitem:active{cursor:grabbing}
-.nitem{position:relative;padding:9px 11px;border-radius:8px;cursor:pointer;font-size:var(--fs-sm);line-height:1.5}
+.drag-handle{position:absolute;left:3px;top:50%;transform:translateY(-50%);
+  font-size:11px;color:var(--ink3);cursor:grab;opacity:0;letter-spacing:-1px;
+  transition:opacity var(--t-fast) var(--ease);user-select:none}
+.nitem:hover .drag-handle{opacity:.75}
+.drag-handle:active{cursor:grabbing}
+.nitem.dragging{opacity:.4}
+.nitem{position:relative;padding:9px 11px 9px 18px;border-radius:8px;cursor:pointer;font-size:var(--fs-sm);line-height:1.5}
 .nitem:hover{background:var(--el-fill-color-light)}
 .nitem.on{background:var(--el-color-primary-light-9)}
 .nitem.draft{cursor:default}
 .nitem.draft .nt{color:var(--el-text-color-regular);font-style:italic}
 .nitem .nt{display:block;padding-right:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500;color:var(--el-text-color-primary)}
 .nitem .d{font-size:var(--fs-2xs);color:var(--el-text-color-secondary);margin-top:3px}
-.nops{position:absolute;right:6px;top:8px;opacity:0;transition:opacity var(--t-fast) var(--ease)}
+.nops{position:absolute;right:6px;top:7px;opacity:0;transition:opacity var(--t-fast) var(--ease);
+  display:flex;gap:2px;background:var(--card);border:1px solid var(--line);border-radius:7px;
+  padding:1px 3px;box-shadow:0 1px 4px rgba(20,24,38,.08)}
 .nitem:hover .nops{opacity:1}
-.nops .el-icon{font-size:13px;color:var(--el-text-color-secondary)}
+.nops .el-icon{font-size:13px;color:var(--el-text-color-secondary);cursor:pointer}
 .nops .el-icon:hover{color:var(--el-color-primary)}
 .nops .el-icon.del:hover{color:var(--el-color-danger)}
 .nops .el-icon.del.busy{opacity:.35;pointer-events:none}
