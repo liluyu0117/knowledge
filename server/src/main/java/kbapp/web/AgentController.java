@@ -41,7 +41,7 @@ public class AgentController {
     }
 
     public record AgentBody(String name, String provider, String model, String kbId,
-                            String systemPrompt, String description, String color) {}
+                            String systemPrompt, String description, String color, Boolean withNotes) {}
 
     public record GenPromptBody(String name, String description, String provider, String model) {}
 
@@ -76,13 +76,13 @@ public class AgentController {
     @PostMapping
     public AgentRegistry.Agent create(@RequestBody AgentBody body) {
         return registry.create(body.name(), body.provider(), body.model(), body.kbId(),
-                body.systemPrompt(), body.description(), body.color());
+                body.systemPrompt(), body.description(), body.color(), body.withNotes());
     }
 
     @PutMapping("/{id}")
     public AgentRegistry.Agent update(@PathVariable String id, @RequestBody AgentBody body) {
         registry.update(id, body.name(), body.provider(), body.model(), body.kbId(),
-                body.systemPrompt(), body.description(), body.color());
+                body.systemPrompt(), body.description(), body.color(), body.withNotes());
         return registry.byId(id);
     }
 

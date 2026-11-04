@@ -46,7 +46,7 @@ public class AgentBootstrap {
                     "default",
                     "",
                     "通用问答智能体（未指定角色）",
-                    "#6366F1");
+                    "#6366F1", true);
             log.info("未检测到智能体，已创建通用助手 {}", a.id());
         }
 

@@ -100,7 +100,15 @@ public class ChatService {
         List<SearchHit> hits;
         HybridSearchService.Result found;
         try {
-            found = search.search(question, topK, folder, null, true, kbId, tags);
+            // 智能体开启「同时检索我的笔记」时跨库合并（笔记库未建索引则自动跳过）
+            List<String> kbIds = new ArrayList<>(List.of(kbId));
+            if (agent != null && agent.withNotesEnabled()
+                    && !kbapp.notes.NotesStore.NOTES_KB_ID.equals(kbId)) {
+                kbIds.add(kbapp.notes.NotesStore.NOTES_KB_ID);
+            }
+            found = kbIds.size() > 1
+                    ? search.searchMulti(question, topK, folder, null, true, kbIds, tags)
+                    : search.search(question, topK, folder, null, true, kbId, tags);
             hits = found.hits();
         } catch (Exception e) {
             log.warn("检索失败", e);
@@ -153,6 +161,7 @@ public class ChatService {
             m.put("seq", h.seq());
             m.put("heading", h.heading());
             m.put("score", h.rrfScore());
+            m.put("kbId", h.kbId());
             sources.add(m);
         }
 

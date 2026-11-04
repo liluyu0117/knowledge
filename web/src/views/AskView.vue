@@ -133,7 +133,7 @@ function openAgentDialog(agent) {
   editingAgentId.value = agent?.id || null
   const firstProvider = (settings.value?.providers || [])[0]
   agentForm.value = agent
-    ? { ...agent }
+    ? { withNotes: true, ...agent }
     : { name: '', color: AGENT_COLORS[agentList.value.length % AGENT_COLORS.length],
         description: '', provider: firstProvider?.name || '',
         model: firstProvider?.chatModel || '', kbId: agentKbId(), systemPrompt: '' }
@@ -827,7 +827,7 @@ function onBodyClick(e, m) {
               <el-text size="small" type="info">来源：</el-text>
               <el-tag v-for="(s, j) in mergedSources(m.sources)" :key="j" class="src" effect="plain"
                       @click="openSource(s)">
-                {{ j + 1 }}. {{ s.docTitle }}<span v-if="s.seqs.length > 1" class="srcseq">（{{ s.seqs.length }} 块）</span>
+                <span v-if="s.kbId === 'notes'" class="srcnote" title="来自我的笔记">📝</span>{{ j + 1 }}. {{ s.docTitle }}<span v-if="s.seqs.length > 1" class="srcseq">（{{ s.seqs.length }} 块）</span>
               </el-tag>
             </div>
           </el-card>
@@ -954,8 +954,12 @@ function onBodyClick(e, m) {
         </el-form-item>
         <el-form-item label="知识库">
           <el-select v-model="agentForm.kbId" style="width:100%">
-            <el-option v-for="k in agentKbs" :key="k.id" :value="k.id" :label="k.name" />
+            <el-option v-for="k in agentKbs" :key="k.id" :value="k.id" :label="k.name + (k.fixed ? '（内置）' : '')" />
           </el-select>
+          <div v-if="agentForm.kbId !== 'notes'" class="form-tip" style="display:flex;align-items:center;gap:6px;margin-top:4px">
+            <el-switch v-model="agentForm.withNotes" style="--el-switch-on-color:var(--accent)" />
+            <span>同时检索我的笔记</span>
+          </div>
         </el-form-item>
         <el-form-item label="系统提示词">
           <el-input v-model="agentForm.systemPrompt" type="textarea" :rows="4"
@@ -1133,6 +1137,7 @@ function onBodyClick(e, m) {
 .sess .lab.gh .gedit:hover{color:var(--accent)}
 .color-dot{width:20px;height:20px;border-radius:6px;cursor:pointer;border:2px solid transparent}
 .scope-hint{color:var(--accent);opacity:.85}
+.srcnote{margin-right:3px}
 /* 会话列表：正在生成的标记 */
 .gen-spin{font-size:12px;color:var(--accent);margin-right:4px;animation:gen-rot 1s linear infinite;vertical-align:-2px}
 @keyframes gen-rot{to{transform:rotate(360deg)}}

@@ -92,6 +92,40 @@ public class HybridSearchService {
      * 过滤下推为 Lucene FILTER（TermInSetQuery on docPath），两路召回都受限，
      * 不会出现「召回了 N 条再被筛掉」导致结果不足的问题。
      */
+    /**
+     * 跨库检索：对多个知识库各自召回后合并（docPath+seq 去重、rrfScore 降序）。
+     * 单库失败（如「我的笔记」尚未建索引）跳过该库，不影响其他库结果。
+     */
+    public Result searchMulti(String query, Integer topK, String folder, Integer maxPerDoc,
+                              boolean withVector, List<String> kbIds, java.util.Collection<String> tags) {
+        int k = topK != null && topK > 0 ? topK : config.get().getRag().getTopK();
+        List<SearchHit> merged = new ArrayList<>();
+        int ck = 0, cv = 0, dropped = 0;
+        boolean vu = false, ru = false;
+        List<String> expanded = List.of();
+        for (String kbId : kbIds == null ? List.<String>of() : kbIds) {
+            if (kbId == null || kbId.isBlank()) continue;
+            try {
+                Result r = search(query, k, folder, maxPerDoc, withVector, kbId, tags);
+                ck += r.candidatesKw();
+                cv += r.candidatesVec();
+                vu |= r.vectorUsed();
+                ru |= r.rerankUsed();
+                dropped += r.dropped();
+                if (r.expanded() != null && !r.expanded().isEmpty()) expanded = r.expanded();
+                for (SearchHit h : r.hits()) {
+                    boolean dup = merged.stream().anyMatch((x) -> x.docPath().equals(h.docPath()) && x.seq() == h.seq());
+                    if (!dup) merged.add(h);
+                }
+            } catch (Exception e) {
+                // 单库不可用：跳过
+            }
+        }
+        merged.sort(java.util.Comparator.comparingDouble(SearchHit::rrfScore).reversed());
+        if (merged.size() > k) merged = new ArrayList<>(merged.subList(0, k));
+        return new Result(merged, ck, cv, vu, ru, dropped, expanded);
+    }
+
     public Result search(String query, Integer topK, String folder, Integer maxPerDoc, boolean withVector,
                          String kbId, java.util.Collection<String> tags) {
         AppConfig cfg = config.get();
@@ -216,7 +250,8 @@ public class HybridSearchService {
                             kwSet.containsKey(e.getKey()),
                             vecSet.containsKey(e.getKey()),
                             null,
-                            contextText);
+                            contextText,
+                            kb.id());
                     pool.add(new Cand(hit, body));
                 }
 
@@ -282,7 +317,7 @@ public class HybridSearchService {
     private SearchHit withScore(SearchHit h, double score) {
         return new SearchHit(h.docPath(), h.docTitle(), h.ext(), h.kind(), h.folder(),
                 h.seq(), h.heading(), h.snippetHtml(), h.rrfScore(), h.kwHit(), h.vecHit(),
-                score, h.contextText());
+                score, h.contextText(), h.kbId());
     }
 
     /**

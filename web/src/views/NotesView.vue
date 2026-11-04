@@ -5,6 +5,8 @@ import { api } from '../api'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { EditPen, Delete } from '@element-plus/icons-vue'
+import PreviewDrawer from '../components/PreviewDrawer.vue'
+import { preview } from '../store/preview'
 
 const notes = ref([])
 const currentId = ref('')
@@ -28,6 +30,7 @@ const manualSaved = ref(false)
 const creating = ref(false)    // 新建笔记前先落盘当前草稿
 const removingId = ref('')     // 正在删除的笔记 id
 const renamingId = ref('')     // 正在重命名的笔记 id
+const refKbId = ref('default') // @doc 引用跳转时定位到的知识库
 
 const nowHM = () => new Date().toTimeString().slice(0, 8)
 
@@ -40,6 +43,21 @@ const saveText = computed(() => {
     default: return isDraft.value ? '新建中 · 有内容后会自动保存' : '已保存'
   }
 })
+
+/** 点击 @doc 引用：反查文档所在知识库并打开预览 */
+async function openDocRef(e) {
+  const el = e.target.closest('.docref')
+  if (!el) return
+  const path = el.dataset.doc
+  try {
+    const loc = await api.get('/api/kb/locate?path=' + encodeURIComponent(path))
+    if (!loc.ok) { ElMessage.error(loc.error || '没有知识库包含该文件'); return }
+    preview.value = { open: true, docPath: path, seq: null }
+    refKbId.value = loc.kbId
+  } catch (err) {
+    ElMessage.error('定位失败：' + (err.message || err))
+  }
+}
 
 function markDirty() {
   dirty.value = true
@@ -341,7 +359,10 @@ function doSelect(n) {
 }
 
 // 实时分屏预览
-const rendered = computed(() => (type.value === 'md' ? mdToHtml(content.value) : null))
+const rendered = computed(() => (type.value === 'md'
+  ? mdToHtml(content.value).replace(/@doc:([^\s<"']+)/g,
+    '<span class="docref" data-doc="$1" style="color:var(--accent);cursor:pointer">📎 $1</span>')
+  : null))
 </script>
 
 <template>
@@ -403,7 +424,7 @@ const rendered = computed(() => (type.value === 'md' ? mdToHtml(content.value) :
                     :placeholder="isDraft ? '在这里写正文；文件名写在上方标题处，切走会自动保存' : '直接在这里写…'"
                     @input="markDirty" />
         </div>
-        <div v-if="previewMode && type === 'md'" class="npv" v-html="rendered"></div>
+        <div v-if="previewMode && type === 'md'" class="npv" v-html="rendered" @click="openDocRef"></div>
       </div>
       <div class="nfoot">
         <el-switch v-model="previewMode" active-text="实时预览" />
@@ -412,7 +433,8 @@ const rendered = computed(() => (type.value === 'md' ? mdToHtml(content.value) :
         </el-text>
       </div>
     </el-main>
-  </el-container>
+    <PreviewDrawer :target="preview" :kb-id="refKbId" @close="preview.open = false" />
+</el-container>
 </template>
 
 <style scoped>
@@ -439,6 +461,7 @@ const rendered = computed(() => (type.value === 'md' ? mdToHtml(content.value) :
   border-radius:8px;overflow:hidden}
 .nedit :deep(.el-textarea__inner){height:100%;box-shadow:none;border:0;background:transparent;
   font-size:var(--fs-base);line-height:var(--lh-loose);padding:16px 20px;resize:none}
+.npv .docref:hover{text-decoration:underline}
 .npv{flex:1;min-width:0;background:#fff;border:1px solid var(--el-border-color-light);border-radius:8px;padding:16px 20px;overflow:auto;
   font-size:var(--fs-base);line-height:var(--lh-loose)}
 .npv :deep(h1){font-size:19px;margin:0 0 12px}

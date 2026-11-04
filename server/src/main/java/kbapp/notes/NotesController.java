@@ -8,9 +8,12 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -26,6 +29,31 @@ public class NotesController {
     @GetMapping
     public Object list() {
         return store.list();
+    }
+
+    /**
+     * 反向引用：哪些笔记引用了某文档（笔记正文里写了 @doc:该路径）。
+     * 笔记量级小，直接扫正文；返回命中的笔记与上下文片段。
+     */
+    @GetMapping("/backrefs")
+    public List<Map<String, Object>> backrefs(@RequestParam("docPath") String docPath) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        String needle = "@doc:" + docPath;
+        for (NotesStore.Note n : store.list()) {
+            String c;
+            try { c = store.content(n.id()); } catch (Exception e) { continue; }
+            if (c == null || !c.contains(needle)) continue;
+            int at = c.indexOf(needle);
+            int from = Math.max(0, at - 40);
+            int to = Math.min(c.length(), at + needle.length() + 60);
+            String ctx = c.substring(from, to).replaceAll("\\s+", " ").trim();
+            Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("id", n.id());
+            m.put("title", n.title());
+            m.put("snippet", "…" + ctx + "…");
+            out.add(m);
+        }
+        return out;
     }
 
     public record NoteBody(String title, String type, String content) {}

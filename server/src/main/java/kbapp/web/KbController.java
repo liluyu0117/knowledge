@@ -552,6 +552,26 @@ public class KbController {
         return m;
     }
 
+    /** 反查一个相对路径存在于哪个知识库（笔记 @doc 引用跳转预览时定位用）。 */
+    @GetMapping("/locate")
+    public Map<String, Object> locate(@RequestParam("path") String relPath) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (relPath == null || relPath.isBlank()) { m.put("ok", false); m.put("error", "路径为空"); return m; }
+        String rel = relPath.replace('\\', '/');
+        for (KbRegistry.KbEntry e : registry.list()) {
+            Path f = registry.docsRoot(e).resolve(rel).normalize();
+            if (f.startsWith(registry.docsRoot(e)) && Files.isRegularFile(f)) {
+                m.put("ok", true);
+                m.put("kbId", e.id());
+                m.put("kbName", e.name());
+                return m;
+            }
+        }
+        m.put("ok", false);
+        m.put("error", "没有知识库包含该文件");
+        return m;
+    }
+
     /** 校验上传目标路径：文件名不带路径分隔符、扩展名在索引白名单内、目录不得越出知识库根。 */
     private Path safeResolve(Path root, String folder, String name) {
         if (name == null || name.isBlank()) throw new IllegalArgumentException("文件名不能为空");

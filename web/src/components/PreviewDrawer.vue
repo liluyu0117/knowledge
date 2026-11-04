@@ -43,6 +43,15 @@ const mode = computed(() => {
   return 'unsupported'
 })
 
+/** 反向引用：哪些笔记 @doc: 引用了当前文档 */
+const backrefs = ref([])
+async function loadBackrefs(docPath) {
+  backrefs.value = []
+  if (!docPath) return
+  try { backrefs.value = await api.get('/api/notes/backrefs?docPath=' + encodeURIComponent(docPath)) }
+  catch { /* 无笔记或接口异常：静默 */ }
+}
+
 watch(() => props.target, async (t) => {
   if (!t || !t.open || !t.docPath) return
   docxHtml.value = ''
@@ -62,6 +71,7 @@ watch(() => props.target, async (t) => {
   try {
     const head = await api.get('/api/doc/meta?path=' + encodeURIComponent(t.docPath) + '&kbId=' + props.kbId)
     info.value = { ...head, path: t.docPath }
+    loadBackrefs(t.docPath)
     if (mode.value === 'docx') {
       const m = await import('mammoth/mammoth.browser')
       const buf = await fetch('/api/doc/raw?path=' + encodeURIComponent(t.docPath) + '&kbId=' + props.kbId).then((r) => {
@@ -285,6 +295,11 @@ async function loadHits() {
       <el-button v-if="tab !== 'hits'" link size="small" @click="tab = 'hits'">查看命中片段</el-button>
     </div>
 
+    <div v-if="backrefs.length" class="backrefs">
+      引用此文档的笔记：
+      <span v-for="(b, i) in backrefs" :key="b.id" class="bref" :title="b.snippet">{{ b.title }}<i v-if="i < backrefs.length - 1">、</i></span>
+    </div>
+
     <div class="dw-body" v-loading="loading" element-loading-text="加载中…">
       <div v-if="loadError" class="load-err">
         预览加载失败：{{ loadError }}
@@ -354,6 +369,9 @@ async function loadHits() {
 .dw-bar .ic[data-k="txt"]{background:var(--mist);color:var(--ink2)}
 .dw-bar .ic[data-k="html"]{background:#F3EAE0;color:#96562B}
 .dw-bar .meta{min-width:0;flex:1}
+.backrefs{margin:6px 0 0;padding:6px 12px;background:var(--mist);border-radius:8px;
+  font-size:var(--fs-xs);color:var(--ink2)}
+.backrefs .bref{color:var(--accent);margin-right:2px}
 .dw-bar .fn{font-size:var(--fs-md);font-weight:600;font-family:var(--serif);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dw-bar .fp{font-size:var(--fs-2xs);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono)}
 .dw-tabs{padding:6px 20px 0}
