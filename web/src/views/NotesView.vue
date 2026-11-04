@@ -321,6 +321,12 @@ function onDragStart(n, e) {
   e.dataTransfer.setData('text/plain', n.title)
 }
 
+function onDragLeave(e, folder) {
+  if (!e.currentTarget.contains(e.relatedTarget)) {
+    if (dropFolder.value === folder) dropFolder.value = null
+  }
+}
+
 function onDropToGroup(folder) {
   const id = dragNoteId.value
   dropFolder.value = null
@@ -346,20 +352,27 @@ async function doMove(n, folder) {
   }
 }
 
-/** 移动笔记到文件夹：弹窗选择（可输入新文件夹名，空 = 根目录） */
-function moveDialog(n) {
-  if (movingId.value) return
-  ElMessageBox.confirm(
-    `把「${n.title}」移动到哪个文件夹？输入名称即可（留空 = 根目录，输入新名称会自动创建）。`,
-    '移动笔记', {
-      inputValue: n.folder || '',
-      inputPlaceholder: '根目录（可输入新文件夹名）',
-      confirmButtonText: '移动', cancelButtonText: '取消',
-    },
-  ).then(async ({ value }) => {
-    const target = (value || '').trim()
-    await doMove(n, target)
-  }).catch(() => {})
+/** 移动菜单指令：选择文件夹直接移动；「新建」则先建再移 */
+function onMoveCommand(f, n) {
+  if (f === '__new__') {
+    ElMessageBox.prompt('新建文件夹（可多级，如「上线方案/2026-11」）', '移动到新文件夹', {
+      inputPlaceholder: '文件夹名',
+      confirmButtonText: '移动到这里', cancelButtonText: '取消',
+    }).then(async ({ value }) => {
+      const name = (value || '').trim()
+      if (!name) return
+      try {
+        const r = await api.post('/api/notes/folders?name=' + encodeURIComponent(name))
+        if (!r.ok) { ElMessage.error(r.error || '创建失败'); return }
+        noteFolders.value = r.folders
+        doMove(n, name)
+      } catch (e) {
+        ElMessage.error('创建失败：' + (e.message || e))
+      }
+    }).catch(() => {})
+    return
+  }
+  doMove(n, f)
 }
 
 /** 新建文件夹（物理目录，供后续归类） */
@@ -487,31 +500,44 @@ const rendered = computed(() => (type.value === 'md'
         <div v-if="!notes.length && !isDraft" class="nempty">还没有笔记，点上方新建</div>
 
         <template v-for="g in noteGroups" :key="g.folder || '__root__'">
-          <div class="ngroup" :class="{ dropt: dropFolder === g.folder }"
-               @dragover.prevent="dropFolder = g.folder" @dragleave="dropFolder === g.folder && (dropFolder = null)"
-               @drop.prevent="onDropToGroup(g.folder)">
+        <div class="ngwrap" :class="{ dropt: dropFolder === g.folder && dragNoteId }"
+             @dragover.prevent="dropFolder = g.folder"
+             @dragleave="onDragLeave($event, g.folder)"
+             @drop.prevent="onDropToGroup(g.folder)">
+          <div class="ngroup">
             <el-icon class="ng-ic"><FolderOpened /></el-icon>{{ g.name }}
             <span class="ng-n">{{ g.items.length }}</span>
           </div>
           <div v-for="n in g.items" :key="n.id" class="nitem"
-               :class="{ on: n.id === currentId }" :style="g.folder ? 'padding-left:14px' : ''"
+               :class="{ on: n.id === currentId, dragging: dragNoteId === n.id }" :style="g.folder ? 'padding-left:14px' : ''"
                draggable="true" @dragstart="onDragStart(n, $event)" @dragend="dragNoteId = ''"
-               @dragover.prevent="dropFolder = g.folder" @dragleave="dropFolder === g.folder && (dropFolder = null)"
-               @drop.prevent="onDropToGroup(g.folder)" @click="select(n)">
+               @click="select(n)">
           <span class="nt" :title="n.title + '.' + extOf(n.type)" @dblclick.stop="renameDialog(n)">{{ n.title }}</span>
           <div class="d">{{ extOf(n.type) }} · {{ n.updatedAt.slice(5, 16).replace('T', ' ') }}</div>
           <span class="nops">
             <el-tooltip content="重命名" placement="top">
               <el-icon @click.stop="renameDialog(n)"><EditPen /></el-icon>
             </el-tooltip>
-            <el-tooltip content="移动到文件夹" placement="top">
-              <el-icon @click.stop="moveDialog(n)"><FolderOpened /></el-icon>
-            </el-tooltip>
+            <el-dropdown trigger="click" popper-class="move-dd"
+                        @command="(f) => onMoveCommand(f, n)" @click.stop>
+              <el-tooltip content="移动到文件夹" placement="top">
+                <el-icon @click.stop><FolderOpened /></el-icon>
+              </el-tooltip>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <div class="mv-label">移动「{{ n.title }}」到</div>
+                  <el-dropdown-item :command="''" :class="{ cur: (n.folder || '') === '' }">根目录</el-dropdown-item>
+                  <el-dropdown-item v-for="f in noteFolders.filter((x) => x !== n.folder)" :key="f" :command="f">{{ f }}</el-dropdown-item>
+                  <el-dropdown-item command="__new__" divided>＋ 新建文件夹…</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <el-tooltip content="删除" placement="top">
               <el-icon class="del" :class="{ busy: removingId === n.id }" @click.stop="removeNote(n)"><Delete /></el-icon>
             </el-tooltip>
           </span>
           </div>
+        </div>
         </template>
       </div>
     </el-aside>
@@ -590,7 +616,11 @@ const rendered = computed(() => (type.value === 'md'
   color:var(--ink3);font-weight:600}
 .ngroup .ng-ic{font-size:12px}
 .ngroup .ng-n{margin-left:auto}
-.ngroup.dropt{background:var(--accent-soft);outline:1.5px dashed var(--accent);border-radius:8px}
+.ngwrap{border-radius:8px;transition:background var(--t-fast) var(--ease),outline var(--t-fast) var(--ease)}
+.ngwrap.dropt{background:var(--accent-soft);outline:1.5px dashed var(--accent)}
+.nitem.dragging{opacity:.4}
+.nitem[draggable="true"]{cursor:grab}
+.nitem[draggable="true"]:active{cursor:grabbing}
 .nitem:active{cursor:grabbing}
 .nitem{position:relative;padding:9px 11px;border-radius:8px;cursor:pointer;font-size:var(--fs-sm);line-height:1.5}
 .nitem:hover{background:var(--el-fill-color-light)}
@@ -606,6 +636,9 @@ const rendered = computed(() => (type.value === 'md'
 .nops .el-icon.del:hover{color:var(--el-color-danger)}
 .nops .el-icon.del.busy{opacity:.35;pointer-events:none}
 .fmt-folder{display:flex;align-items:center;gap:8px;margin-top:12px}
+.move-dd .mv-label{font-size:var(--fs-2xs);color:var(--el-text-color-secondary);
+  padding:6px 12px 2px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.move-dd .el-dropdown-menu__item.cur{background:var(--accent-soft);color:var(--accent)}
 .ff-label{font-size:var(--fs-xs);color:var(--ink3);flex:0 0 auto}
 .nempty{padding:14px 10px;font-size:var(--fs-xs);color:var(--el-text-color-secondary);text-align:center}
 .nmain{display:flex;flex-direction:column;padding:0;overflow:hidden}
