@@ -766,20 +766,6 @@ function onBodyClick(e, m) {
         <el-text tag="b" size="large" class="qa-title">
           {{ sessions.find((s) => s.id === currentId)?.title || '新会话' }}
         </el-text>
-        <!-- 顶部只有一个控件：智能体 + 模型；会话已绑定时显示只读状态 -->
-        <el-tooltip v-if="lockedAgent" placement="bottom"
-                    content="该会话已绑定智能体，模型与检索范围随之固定；新建会话（Ctrl+K）可重新选择">
-          <span class="agent-lock">
-            <el-icon class="lockicon"><Lock /></el-icon>
-            <b>{{ lockedAgent.name }}</b>
-            <i>·</i>{{ lockedAgent.provider || '未设厂商' }} {{ lockedAgent.model || '' }}
-          </span>
-        </el-tooltip>
-        <el-select v-else :model-value="agentId" size="small" class="agent-sel"
-                   placeholder="选择智能体" @change="onTopAgentChange">
-          <el-option v-for="a in agentList" :key="a.id" :value="a.id" :label="'🤖 ' + agentLabel(a)" />
-          <el-option value="__new__" label="＋ 新建智能体" divided />
-        </el-select>
       </div>
 
       <div class="chat-scroll" ref="chatEl" @scroll="onChatScroll">
@@ -840,21 +826,46 @@ function onBodyClick(e, m) {
         <template v-else>↓</template>
       </el-button>
 
-      <div v-if="!agentList.length" class="scope">
-        <el-text size="small" type="warning">还没有智能体，先新建一个再提问</el-text>
-        <el-button size="small" type="primary" @click="openAgentDialog(null)">＋ 新建智能体</el-button>
-      </div>
-      <div v-else-if="lockedAgent || kbMissing" class="scope">
-        <el-text v-if="lockedAgent" size="small" type="info" class="scope-hint">
-          跟随智能体「{{ lockedAgent.name }}」· 知识库「{{ currentKbName }}」
-        </el-text>
-        <el-text v-if="kbMissing" size="small" type="danger">
-          所属知识库已被删除，请到「知识库」页重建，或编辑智能体改绑
+      <div v-if="kbMissing" class="scope">
+        <el-text size="small" type="danger">
+          智能体「{{ agentOf(agentId)?.name || '' }}」所属知识库已被删除，请到「知识库」页重建，或编辑智能体改绑
         </el-text>
       </div>
 
-      <!-- 输入区：输入框 + 底部操作条 -->
+      <!-- 输入区：智能体 pill + 输入框 + 底部操作条 -->
       <div class="composer">
+        <div class="agent-row">
+          <el-dropdown v-if="!lockedAgent && agentList.length" trigger="click"
+                       popper-class="agent-dd" @command="onTopAgentChange">
+            <span class="agent-pill" title="选择回答使用的智能体">
+              <span class="ap-emoji">🤖</span>
+              <b>{{ agentOf(agentId)?.name || '选择智能体' }}</b>
+              <i v-if="agentOf(agentId)?.model">· {{ agentOf(agentId).model }}</i>
+              <span class="ap-arr">▾</span>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <div class="apd-label">选择智能体</div>
+                <el-dropdown-item v-for="a in agentList" :key="a.id" :command="a.id"
+                                  :class="{ cur: a.id === agentId }">
+                  <span class="apd-dot" :style="{ background: a.color }"></span>
+                  <span class="apd-name">{{ a.name }}</span>
+                  <span class="apd-model">{{ a.model || '默认模型' }}</span>
+                </el-dropdown-item>
+                <el-dropdown-item command="__new__" divided>＋ 新建智能体</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-tooltip v-else-if="lockedAgent" placement="top"
+                      content="该会话已绑定智能体，模型与检索范围随之固定；新建会话（Ctrl+K）可重新选择">
+            <span class="agent-pill locked">
+              <el-icon class="lockicon"><Lock /></el-icon>
+              <b>{{ lockedAgent.name }}</b>
+              <i v-if="lockedAgent.model">· {{ lockedAgent.model }}</i>
+            </span>
+          </el-tooltip>
+          <span class="grow"></span>
+        </div>
         <el-input ref="askInputRef" v-model="question" class="askinput" type="textarea"
                   :autosize="{ minRows: 3, maxRows: 10 }"
                   placeholder="向知识库提问，Enter 发送，Shift+Enter 换行…"
@@ -1009,13 +1020,24 @@ function onBodyClick(e, m) {
 .qa-top{display:flex;align-items:center;gap:12px;padding:var(--page-y) var(--page-x) 0;min-height:54px}
 .qa-top h3, .qa-top .el-text{font-family:var(--sans);font-size:var(--fs-xl);font-weight:600;letter-spacing:0;line-height:1.35}
 .qa-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.agent-sel{width:270px;flex:0 0 auto}
-/* 会话已绑定智能体：只读胶囊 + 锁 */
-.agent-lock{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 10px;border-radius:8px;
-  background:var(--mist);border:1px solid var(--line);color:var(--ink2);font-size:var(--fs-xs);cursor:default}
-.agent-lock b{font-weight:600;color:var(--ink)}
-.agent-lock i{font-style:normal;opacity:.45}
-.agent-lock .lockicon{font-size:12px;color:var(--ink3)}
+/* 输入框上方的智能体选择 pill（AI 工具风格） */
+.agent-row{display:flex;align-items:center;gap:8px;padding:0 2px 6px}
+.agent-pill{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;
+  border-radius:9px;background:var(--mist);border:1px solid transparent;
+  color:var(--ink2);font-size:var(--fs-xs);cursor:pointer;transition:all var(--t-fast) var(--ease)}
+.agent-pill:hover{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.agent-pill b{font-weight:600;color:var(--ink)}
+.agent-pill:hover b{color:var(--accent)}
+.agent-pill i{font-style:normal;opacity:.6;font-size:var(--fs-2xs)}
+.agent-pill .ap-arr{font-size:9px;opacity:.5}
+.agent-pill.locked{cursor:default}
+.agent-pill.locked .lockicon{font-size:12px;color:var(--ink3)}
+/* pill 下拉菜单 */
+:global(.agent-dd .apd-label){font-size:var(--fs-2xs);color:var(--el-text-color-secondary);padding:6px 12px 2px}
+:global(.agent-dd .apd-dot){width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+:global(.agent-dd .apd-name){font-weight:500}
+:global(.agent-dd .apd-model){font-size:var(--fs-2xs);color:var(--ink3);margin-left:8px}
+:global(.agent-dd .el-dropdown-menu__item.cur){background:var(--accent-soft);color:var(--accent)}
 .chat-scroll{flex:1;overflow:auto;padding:18px var(--page-x) 20px;display:flex;flex-direction:column;gap:16px}
 /* 提问：主色气泡（长文本可折叠） */
 .q{width:fit-content;margin-left:auto;max-width:66%;flex-shrink:0;background:var(--accent);color:#fff;
@@ -1137,7 +1159,6 @@ function onBodyClick(e, m) {
 .sess .lab.gh .gedit{margin-left:auto;color:var(--ink3);cursor:pointer}
 .sess .lab.gh .gedit:hover{color:var(--accent)}
 .color-dot{width:20px;height:20px;border-radius:6px;cursor:pointer;border:2px solid transparent}
-.scope-hint{color:var(--accent);opacity:.85}
 .srcnote{margin-right:3px}
 /* 会话列表：正在生成的标记 */
 .gen-spin{font-size:12px;color:var(--accent);margin-right:4px;animation:gen-rot 1s linear infinite;vertical-align:-2px}
