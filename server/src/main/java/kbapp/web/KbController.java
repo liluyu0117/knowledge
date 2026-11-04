@@ -49,7 +49,8 @@ public class KbController {
     public List<Map<String, Object>> list() {
         List<Map<String, Object>> out = new ArrayList<>();
         List<KbRegistry.KbEntry> entries = new ArrayList<>(registry.list());
-        entries.sort(Comparator.comparing(KbRegistry.KbEntry::createdAt));
+        entries.sort(Comparator.comparing(KbRegistry.KbEntry::fixed)          // 普通库在前，内置库（我的笔记）排最后
+                  .thenComparing(KbRegistry.KbEntry::createdAt));
         for (KbRegistry.KbEntry e : entries) {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", e.id());

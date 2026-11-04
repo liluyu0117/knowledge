@@ -56,13 +56,49 @@ public class NotesController {
         return out;
     }
 
-    public record NoteBody(String title, String type, String content) {}
+    public record NoteBody(String title, String type, String content, String folder) {}
     public record RenameBody(String title) {}
 
     @PostMapping
     public Map<String, Object> create(@RequestBody NoteBody body) {
-        NotesStore.Note n = store.create(body.title(), body.type(), body.content());
+        NotesStore.Note n = store.create(body.title(), body.type(), body.content(), body.folder());
         return view(n);
+    }
+
+    /** 移动笔记到另一文件夹（空串 = 根目录）。 */
+    @PostMapping("/{id}/move")
+    public Map<String, Object> move(@PathVariable String id, @RequestParam("folder") String folder) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        try {
+            NotesStore.Note n = store.moveTo(id, folder);
+            m.put("ok", true);
+            m.put("folder", n.folderOrRoot());
+        } catch (Exception e) {
+            m.put("ok", false);
+            m.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+        return m;
+    }
+
+    /** 现有文件夹列表（含物理目录）。 */
+    @GetMapping("/folders")
+    public List<String> folders() {
+        return store.folders();
+    }
+
+    /** 新建文件夹（可多级，已存在视为成功）。 */
+    @PostMapping("/folders")
+    public Map<String, Object> newFolder(@RequestParam("name") String name) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        try {
+            store.createFolder(name);
+            m.put("ok", true);
+            m.put("folders", store.folders());
+        } catch (Exception e) {
+            m.put("ok", false);
+            m.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+        return m;
     }
 
     /**
@@ -136,6 +172,7 @@ public class NotesController {
         m.put("title", n.title());
         m.put("type", n.type());
         m.put("updatedAt", n.updatedAt());
+        m.put("folder", n.folderOrRoot());
         return m;
     }
 }

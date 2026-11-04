@@ -4,7 +4,7 @@ import { ref, computed, onMounted, onBeforeUnmount, onActivated, nextTick } from
 import { api } from '../api'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { EditPen, Delete } from '@element-plus/icons-vue'
+import { EditPen, Delete, FolderOpened, FolderAdd } from '@element-plus/icons-vue'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { preview } from '../store/preview'
 
@@ -33,6 +33,25 @@ const renamingId = ref('')     // 正在重命名的笔记 id
 const refKbId = ref('default') // @doc 引用跳转时定位到的知识库
 const newDlg = ref(false)      // 新建笔记的格式选择弹窗
 const newType = ref('md')
+const newFolder = ref('')          // 新建对话框里选的归属文件夹
+const draftFolder = ref('')        // 当前草稿的归属文件夹（创建时提交）
+const noteFolders = ref([])        // 现有文件夹列表
+const movingId = ref('')           // 正在移动的笔记 id
+// 按文件夹分组：根目录一组，其余按文件夹名分组（侧栏分组展示）
+const noteGroups = computed(() => {
+  const root = [], byFolder = new Map()
+  for (const n of notes.value) {
+    const f = n.folder || ''
+    if (!f) { root.push(n); continue }
+    if (!byFolder.has(f)) byFolder.set(f, [])
+    byFolder.get(f).push(n)
+  }
+  const groups = []
+  if (root.length) groups.push({ folder: '', name: '根目录', items: root })
+  for (const [f, items] of byFolder) groups.push({ folder: f, name: f, items })
+  return groups
+})
+
 const NOTE_TYPES = [
   { t: 'md', icon: '📝', name: 'Markdown', desc: '支持标题/列表，预览友好' },
   { t: 'txt', icon: '📄', name: '纯文本', desc: '随手记，无格式' },
@@ -167,7 +186,7 @@ async function persist(manual = false) {
   saveState.value = 'saving'
   try {
     if (isDraft.value) {
-      const n = await api.post('/api/notes', { title: p.base, type: p.type, content: c })
+      const n = await api.post('/api/notes', { title: p.base, type: p.type, content: c, folder: draftFolder.value })
       currentId.value = n.id
       title.value = n.title
       type.value = n.type
@@ -245,7 +264,7 @@ function newNote() {
 /** 格式选定了 → 进入空白编辑 */
 function startDraft(t) {
   newDlg.value = false
-  resetDraft(t)
+  resetDraft(t, newFolder.value)
   focusTitle()
 }
 
@@ -289,6 +308,50 @@ function renameDialog(n) {
 function remove() {
   if (!currentId.value) { ElMessage.warning('还没有创建这个笔记'); return }
   removeNote({ id: currentId.value, title: title.value || '未命名笔记' })
+}
+
+/** 移动笔记到文件夹：弹窗选择（可输入新文件夹名，空 = 根目录） */
+function moveDialog(n) {
+  if (movingId.value) return
+  ElMessageBox.confirm(
+    `把「${n.title}」移动到哪个文件夹？输入名称即可（留空 = 根目录，输入新名称会自动创建）。`,
+    '移动笔记', {
+      inputValue: n.folder || '',
+      inputPlaceholder: '根目录（可输入新文件夹名）',
+      confirmButtonText: '移动', cancelButtonText: '取消',
+    },
+  ).then(async ({ value }) => {
+    const target = (value || '').trim()
+    movingId.value = n.id
+    try {
+      const r = await api.post(`/api/notes/${n.id}/move?folder=${encodeURIComponent(target)}`)
+      if (!r.ok) { ElMessage.error(r.error || '移动失败'); return }
+      ElMessage.success(target ? `已移动到「${target}」` : '已移动到根目录')
+      if (currentId.value === n.id) draftFolder.value = target
+      load()
+    } catch (e) {
+      ElMessage.error('移动失败：' + (e.message || e))
+    } finally {
+      movingId.value = ''
+    }
+  }).catch(() => {})
+}
+
+/** 新建文件夹（物理目录，供后续归类） */
+function addFolder() {
+  ElMessageBox.prompt('输入文件夹名（可多级，如「上线方案/2026-11」）', '新建文件夹', {
+    inputPlaceholder: '文件夹名',
+    confirmButtonText: '创建', cancelButtonText: '取消',
+  }).then(async ({ value }) => {
+    try {
+      const r = await api.post('/api/notes/folders?name=' + encodeURIComponent((value || '').trim()))
+      if (!r.ok) { ElMessage.error(r.error || '创建失败'); return }
+      noteFolders.value = r.folders
+      ElMessage.success('文件夹已创建')
+    } catch (e) {
+      ElMessage.error('创建失败：' + (e.message || e))
+    }
+  }).catch(() => {})
 }
 
 /** 按笔记对象删除：侧栏与编辑器共用；删的是当前打开的笔记时清空编辑器 */
@@ -342,6 +405,7 @@ onBeforeUnmount(() => {
 
 async function load() {
   notes.value = await api.get('/api/notes')
+  noteFolders.value = await api.get('/api/notes/folders').catch(() => [])
   if (!currentId.value && notes.value.length) doSelect(notes.value[0])
 }
 
@@ -382,7 +446,12 @@ const rendered = computed(() => (type.value === 'md'
 <template>
   <el-container class="np">
     <el-aside width="250px" class="nside">
-      <el-button type="primary" style="width:100%" :loading="creating" @click="newNote">＋ 新建笔记</el-button>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+          <el-button type="primary" style="flex:1" :loading="creating" @click="newNote">＋ 新建笔记</el-button>
+          <el-button style="flex:0 0 auto" @click="addFolder" title="新建文件夹">
+            <el-icon><FolderAdd /></el-icon>
+          </el-button>
+        </div>
       <div class="nlist">
         <!-- 新建中的草稿行：有改动就自动保存成正式笔记 -->
         <div v-if="isDraft" class="nitem on draft">
@@ -392,19 +461,28 @@ const rendered = computed(() => (type.value === 'md'
 
         <div v-if="!notes.length && !isDraft" class="nempty">还没有笔记，点上方新建</div>
 
-        <div v-for="n in notes" :key="n.id" class="nitem"
-             :class="{ on: n.id === currentId }" @click="select(n)">
+        <template v-for="g in noteGroups" :key="g.folder || '__root__'">
+          <div class="ngroup">
+            <el-icon class="ng-ic"><FolderOpened /></el-icon>{{ g.name }}
+            <span class="ng-n">{{ g.items.length }}</span>
+          </div>
+          <div v-for="n in g.items" :key="n.id" class="nitem"
+               :class="{ on: n.id === currentId }" :style="g.folder ? 'padding-left:14px' : ''" @click="select(n)">
           <span class="nt" :title="n.title + '.' + extOf(n.type)" @dblclick.stop="renameDialog(n)">{{ n.title }}</span>
           <div class="d">{{ extOf(n.type) }} · {{ n.updatedAt.slice(5, 16).replace('T', ' ') }}</div>
           <span class="nops">
             <el-tooltip content="重命名" placement="top">
               <el-icon @click.stop="renameDialog(n)"><EditPen /></el-icon>
             </el-tooltip>
+            <el-tooltip content="移动到文件夹" placement="top">
+              <el-icon @click.stop="moveDialog(n)"><FolderOpened /></el-icon>
+            </el-tooltip>
             <el-tooltip content="删除" placement="top">
               <el-icon class="del" :class="{ busy: removingId === n.id }" @click.stop="removeNote(n)"><Delete /></el-icon>
             </el-tooltip>
           </span>
-        </div>
+          </div>
+        </template>
       </div>
     </el-aside>
 
@@ -452,11 +530,19 @@ const rendered = computed(() => (type.value === 'md'
     <!-- 新建笔记：先选定格式 -->
     <el-dialog v-model="newDlg" title="新建笔记" width="420px" :close-on-click-modal="false">
       <div class="fmt-grid">
-        <div v-for="f in NOTE_TYPES" :key="t" class="fmt" :class="{ sel: newType === f.t }" @click="newType = f.t">
+        <div v-for="f in NOTE_TYPES" :key="f.t" class="fmt" :class="{ sel: newType === f.t }" @click="newType = f.t">
           <div class="fmt-ic">{{ f.icon }}</div>
           <div class="fmt-n">{{ f.name }}</div>
           <div class="fmt-d">{{ f.desc }}</div>
         </div>
+      </div>
+      <div class="fmt-folder">
+        <span class="ff-label">保存到</span>
+        <el-select v-model="newFolder" filterable allow-create default-first-option size="small" style="flex:1"
+                   placeholder="根目录（可输入新文件夹名）">
+          <el-option label="根目录" value="" />
+          <el-option v-for="f in noteFolders" :key="f" :label="f" :value="f" />
+        </el-select>
       </div>
       <template #footer>
         <el-button @click="newDlg = false">取消</el-button>
@@ -470,6 +556,10 @@ const rendered = computed(() => (type.value === 'md'
 .np{height:100%;background:var(--el-bg-color-page)}
 .nside{background:#FBFBFC;border-right:1px solid var(--el-border-color-light);padding:12px 8px;overflow:auto}
 .nlist{margin-top:8px}
+.ngroup{display:flex;align-items:center;gap:5px;padding:8px 11px 4px;font-size:var(--fs-2xs);
+  color:var(--ink3);font-weight:600}
+.ngroup .ng-ic{font-size:12px}
+.ngroup .ng-n{margin-left:auto}
 .nitem{position:relative;padding:9px 11px;border-radius:8px;cursor:pointer;font-size:var(--fs-sm);line-height:1.5}
 .nitem:hover{background:var(--el-fill-color-light)}
 .nitem.on{background:var(--el-color-primary-light-9)}
@@ -483,6 +573,8 @@ const rendered = computed(() => (type.value === 'md'
 .nops .el-icon:hover{color:var(--el-color-primary)}
 .nops .el-icon.del:hover{color:var(--el-color-danger)}
 .nops .el-icon.del.busy{opacity:.35;pointer-events:none}
+.fmt-folder{display:flex;align-items:center;gap:8px;margin-top:12px}
+.ff-label{font-size:var(--fs-xs);color:var(--ink3);flex:0 0 auto}
 .nempty{padding:14px 10px;font-size:var(--fs-xs);color:var(--el-text-color-secondary);text-align:center}
 .nmain{display:flex;flex-direction:column;padding:0;overflow:hidden}
 .nbody{flex:1;display:flex;gap:10px;min-height:0;margin:0 var(--page-x) 10px}

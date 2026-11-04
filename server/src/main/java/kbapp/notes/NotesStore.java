@@ -41,7 +41,10 @@ public class NotesStore {
     /** 笔记所在内置知识库 id（KbRegistry 启动时确保存在，fixed 不可删）。 */
     public static final String NOTES_KB_ID = "notes";
 
-    public record Note(String id, String title, String type, String createdAt, String updatedAt, String kbId) {}
+    public record Note(String id, String title, String type, String createdAt, String updatedAt,
+                       String kbId, String folder) {
+        public String folderOrRoot() { return folder == null ? "" : folder.trim(); }
+    }
 
     private final AppPaths paths;
     private final KbRegistry registry;
@@ -70,8 +73,7 @@ public class NotesStore {
             if (Files.exists(f)) {
                 List<Note> loaded = new ArrayList<>(List.of(M.readValue(f.toFile(), Note[].class)));
                 // 旧注册表无 kbId 字段：补默认值，向后兼容
-                notes = new ArrayList<>(loaded.stream().map((n) -> n.kbId() == null || n.kbId().isBlank()
-                        ? new Note(n.id(), n.title(), n.type(), n.createdAt(), n.updatedAt(), NOTES_KB_ID) : n).toList());
+                notes = new ArrayList<>(loaded.stream().map((n) -> normalize(n)).toList());
             }
             migrateLegacy();
         } catch (IOException e) {
@@ -103,6 +105,25 @@ public class NotesStore {
         } catch (Exception e) {
             log.warn("笔记迁移失败，保留原目录 .kb/notes 不动，下次启动重试", e);
         }
+    }
+
+    /** 旧注册表缺 kbId/folder：补默认值，向后兼容。 */
+    private Note normalize(Note n) {
+        String kbId = n.kbId() == null || n.kbId().isBlank() ? NOTES_KB_ID : n.kbId();
+        String folder = n.folder() == null ? "" : sanitizeFolder(n.folder());
+        return new Note(n.id(), n.title(), n.type(), n.createdAt(), n.updatedAt(), kbId, folder);
+    }
+
+    /** 文件夹名清洗：允许中文/字母/数字与 / 分隔多级，禁止 .. 与非法字符。 */
+    private static String sanitizeFolder(String f) {
+        String s = f == null ? "" : f.replace('\\', '/').trim();
+        while (s.startsWith("/")) s = s.substring(1);
+        while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
+        for (String part : s.split("/")) {
+            if (part.isBlank() || part.equals(".") || part.equals("..")
+                    || part.matches(".*[\\:*?\"<>|].*")) return "";
+        }
+        return s;
     }
 
     private String readLegacy(Path f, String type) throws IOException {
@@ -161,9 +182,14 @@ public class NotesStore {
     }
 
     /** 文件名 = sanitize 后的标题；与标题一致，检索结果标题直接可读。 */
+    private Path noteDir(Note n) {
+        String folder = sanitizeFolder(n.folderOrRoot());
+        return folder.isEmpty() ? notesDir() : notesDir().resolve(folder);
+    }
+
     private Path noteFile(Note n) {
         String base = sanitizeFileName(n.title());
-        Path f = notesDir().resolve(base + "." + n.type());
+        Path f = noteDir(n).resolve(base + "." + n.type());
         // 不同标题 sanitize 后撞名（如 a/b 与 a:b）：追加序号保证各归各位
         if (Files.exists(f)) {
             int i = 2;
@@ -200,24 +226,86 @@ public class NotesStore {
 
     /** 笔记当前实际文件（按标题推导；找不到时按旧命名兜底，兼容异常情况）。 */
     private Path fileOf(Note n) {
-        Path f = notesDir().resolve(sanitizeFileName(n.title()) + "." + n.type());
+        Path f = noteDir(n).resolve(sanitizeFileName(n.title()) + "." + n.type());
         if (Files.exists(f)) return f;
-        Path legacy = notesDir().resolve(n.id() + "." + n.type());
-        return Files.exists(legacy) ? legacy : f;
+        // 兜底：根目录同名（归属调整中/迁移中）
+        Path legacy = notesDir().resolve(sanitizeFileName(n.title()) + "." + n.type());
+        if (Files.exists(legacy)) return legacy;
+        Path oldId = notesDir().resolve(n.id() + "." + n.type());
+        return Files.exists(oldId) ? oldId : f;
     }
 
-    public synchronized Note create(String title, String type, String content) {
+    public synchronized Note create(String title, String type, String content, String folder) {
         String t = "doc".equals(type) ? "docx" : type;
         if (!List.of("md", "txt", "docx").contains(t)) throw new IllegalArgumentException("不支持的笔记类型: " + type);
         String id = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         String now = java.time.LocalDateTime.now().withNano(0).toString();
         String base = title == null || title.isBlank() ? "未命名笔记" : title.trim();
-        Note n = new Note(id, uniqueTitle(base, null), t, now, now, NOTES_KB_ID);
+        String f = sanitizeFolder(folder);
+        Note n = new Note(id, uniqueTitle(base, null), t, now, now, NOTES_KB_ID, f);
         writeFile(n, content == null ? "" : content);
         notes.add(n);
         save();
         scheduleRebuild();
         return n;
+    }
+
+    /** 移动笔记到另一个文件夹（文件夹不存在自动创建）；返回更新后的笔记。 */
+    public synchronized Note moveTo(String id, String folder) {
+        Note n = byId(id);
+        if (n == null) throw new IllegalArgumentException("笔记不存在");
+        String f = sanitizeFolder(folder);
+        if (f.equals(n.folderOrRoot())) return n;
+        Path from = fileOf(n);
+        Note nn = new Note(n.id(), n.title(), n.type(), n.createdAt(),
+                java.time.LocalDateTime.now().withNano(0).toString(), n.kbId(), f);
+        try {
+            Files.createDirectories(noteDir(nn));
+            Files.move(from, noteFile(nn));
+            // 原目录空了就清掉，避免留空壳
+            Path oldParent = from.getParent();
+            if (!oldParent.equals(notesDir())) {
+                try (var st = Files.list(oldParent)) {
+                    if (st.findAny().isEmpty()) deleteTree(oldParent);
+                }
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("移动笔记文件失败: " + e.getMessage(), e);
+        }
+        notes.removeIf((x) -> x.id().equals(id));
+        notes.add(nn);
+        save();
+        scheduleRebuild();
+        return nn;
+    }
+
+    /** 现有文件夹列表（注册表 folder 字段 ∪ 物理一级子目录），根目录在前。 */
+    public synchronized List<String> folders() {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (Note n : notes) {
+            String f = n.folderOrRoot();
+            if (!f.isEmpty()) out.add(f);
+        }
+        try (var st = Files.list(notesDir())) {
+            st.filter(Files::isDirectory).forEach((d) -> {
+                String rel = notesDir().relativize(d).toString().replace('\\', '/');
+                if (!rel.isBlank()) out.add(rel);
+            });
+        } catch (IOException ignored) { }
+        List<String> list = new ArrayList<>(out);
+        list.sort(String::compareTo);
+        return list;
+    }
+
+    /** 新建文件夹（物理目录，可多级）。已存在时静默成功。 */
+    public synchronized void createFolder(String folder) {
+        String f = sanitizeFolder(folder);
+        if (f.isEmpty()) throw new IllegalArgumentException("文件夹名不合法");
+        try {
+            Files.createDirectories(notesDir().resolve(f));
+        } catch (IOException e) {
+            throw new IllegalStateException("创建文件夹失败: " + e.getMessage(), e);
+        }
     }
 
     /**
@@ -233,7 +321,7 @@ public class NotesStore {
             throw new IllegalArgumentException("已存在同名笔记「" + t + "」");
         }
         Path oldFile = fileOf(n);
-        Note nn = new Note(n.id(), t, n.type(), n.createdAt(), java.time.LocalDateTime.now().withNano(0).toString(), NOTES_KB_ID);
+        Note nn = new Note(n.id(), t, n.type(), n.createdAt(), java.time.LocalDateTime.now().withNano(0).toString(), n.kbId(), n.folderOrRoot());
         try {
             Files.move(oldFile, noteFile(nn));
         } catch (IOException e) {
@@ -268,7 +356,7 @@ public class NotesStore {
             throw new IllegalArgumentException("已存在同名笔记「" + t + "」");
         }
         Path oldFile = fileOf(n);
-        Note nn = new Note(n.id(), t, n.type(), n.createdAt(), java.time.LocalDateTime.now().withNano(0).toString(), NOTES_KB_ID);
+        Note nn = new Note(n.id(), t, n.type(), n.createdAt(), java.time.LocalDateTime.now().withNano(0).toString(), n.kbId(), n.folderOrRoot());
         notes.removeIf((x) -> x.id().equals(id));
         notes.add(nn);
         if (renamed) {
@@ -295,9 +383,9 @@ public class NotesStore {
 
     private void writeFile(Note n, String content) {
         try {
-            Files.createDirectories(notesDir());
+            Files.createDirectories(noteDir(n));
             // 同名文件先删（重命名场景下 move 之后旧名已不在，这里覆盖正文即可）
-            Path f = notesDir().resolve(sanitizeFileName(n.title()) + "." + n.type());
+            Path f = noteDir(n).resolve(sanitizeFileName(n.title()) + "." + n.type());
             if ("docx".equals(n.type())) {
                 try (var doc = new XWPFDocument()) {
                     for (String line : content.split("\n", -1)) {
