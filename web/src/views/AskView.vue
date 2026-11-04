@@ -40,6 +40,7 @@ const chatEl = ref(null)
 let abortCtl = null
 let currentAns = null            // 正在生成的回答对象（切会话后仍可定位）
 const sessionCache = new Map()   // sid -> 实时消息数组（含生成中回答），切换会话时暂存/恢复
+const genSid = ref('')           // 正在生成的会话 id（本地即时标记，不等列表接口刷新）
 const folders = ref([])
 const activeFolder = ref('')
 const agentKbs = ref([{ id: 'default', name: '默认知识库' }])
@@ -410,6 +411,7 @@ async function ask(qOverride, opts = {}) {
     } catch (e) { /* 失败则退回旧行为：由后端生成完成后创建 */ }
   }
   const askSid = currentId.value
+  genSid.value = askSid
   // regen 复用已有提问，不再重复入栈
   if (!opts.skipUser) messages.value.push({ role: 'user', content: q })
   const ans = reactive({ role: 'assistant', content: '', raw: '', sources: null, error: null, stopped: false, uid: 'a' + Date.now() })
@@ -459,6 +461,7 @@ async function ask(qOverride, opts = {}) {
       }
       sessionCache.delete(done.sessionId) // 已入库，下次进入重新拉取
       currentAns = null
+      genSid.value = ''
       await reloadSessions()
       if (currentId.value === done.sessionId) scrollBottom()
     },
@@ -469,6 +472,7 @@ async function ask(qOverride, opts = {}) {
       flushNow()
       ans.error = msg
       currentAns = null
+      genSid.value = ''
       if (askSid) sessionCache.delete(askSid)
       scrollBottom()
     },
@@ -486,6 +490,7 @@ function stopGen() {
     target.stopped = true
   }
   currentAns = null
+  genSid.value = ''
 }
 
 function copyAns(m) {
@@ -714,7 +719,7 @@ function onBodyClick(e, m) {
           <template v-if="!collapsed[g.key]">
             <div v-for="s in g.sessions" :key="s.id" class="it" :class="{ on: s.id === currentId }" @click="openSession(s.id)">
               <span class="t">
-                <el-icon v-if="s.generating" class="gen-spin" title="正在生成回答"><Loading /></el-icon>
+                <el-icon v-if="s.generating || s.id === genSid" class="gen-spin" title="正在生成回答"><Loading /></el-icon>
                 {{ s.title }}
               </span>
               <span class="ops" :class="{ busy: sessionBusyId === s.id }">
