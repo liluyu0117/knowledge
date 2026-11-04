@@ -38,6 +38,8 @@ const generating = ref(false)
 const follow = ref(true)
 const chatEl = ref(null)
 let abortCtl = null
+let currentAns = null            // 正在生成的回答对象（切会话后仍可定位）
+const sessionCache = new Map()   // sid -> 实时消息数组（含生成中回答），切换会话时暂存/恢复
 const folders = ref([])
 const activeFolder = ref('')
 const agentKbs = ref([{ id: 'default', name: '默认知识库' }])
@@ -296,9 +298,16 @@ function groupOf(s) {
 }
 
 async function openSession(id) {
+  // 暂存当前会话的实时消息（可能含生成中的回答），切回来时恢复
+  if (currentId.value && messages.value.length) sessionCache.set(currentId.value, messages.value)
   const s = sessions.value.find((x) => x.id === id)
   currentId.value = id
-  messages.value = await api.get('/api/sessions/' + id)
+  if (sessionCache.has(id)) {
+    // 该会话有实时视图（比如正在生成回答）：直接恢复，不覆盖
+    messages.value = sessionCache.get(id)
+  } else {
+    messages.value = await api.get('/api/sessions/' + id)
+  }
   // 回显会话绑定的智能体；未绑定或智能体已删除则落到第一个智能体
   agentId.value = s?.agentId && agentOf(s.agentId) ? s.agentId : (agentList.value[0]?.id || '')
   await applyAgentScope(agentId.value)
@@ -306,6 +315,7 @@ async function openSession(id) {
 }
 
 function newSession() {
+  if (currentId.value && messages.value.length) sessionCache.set(currentId.value, messages.value)
   currentId.value = ''
   messages.value = []
   if (!agentId.value && agentList.value.length) agentId.value = agentList.value[0].id
@@ -359,6 +369,7 @@ function removeSession(s) {
     sessionBusyId.value = s.id
     try {
       await api.del(`/api/sessions/${s.id}`)
+      sessionCache.delete(s.id)
       if (currentId.value === s.id) { currentId.value = ''; messages.value = [] }
       await reloadSessions()
       ElMessage.success('会话已删除')
@@ -376,10 +387,21 @@ async function ask(qOverride, opts = {}) {
   if (qOverride === undefined) question.value = ''
   generating.value = true
   follow.value = true
+  // 新会话先落库拿到 id：切换会话/标题显示/实时缓存都需要归属，不等生成完
+  if (!currentId.value) {
+    try {
+      const t = q.replace(/\s+/g, ' ').slice(0, 18) || '新会话'
+      const created = await api.post('/api/sessions?title=' + encodeURIComponent(t))
+      currentId.value = created.id
+      reloadSessions()
+    } catch (e) { /* 失败则退回旧行为：由后端生成完成后创建 */ }
+  }
+  const askSid = currentId.value
   // regen 复用已有提问，不再重复入栈
   if (!opts.skipUser) messages.value.push({ role: 'user', content: q })
   const ans = reactive({ role: 'assistant', content: '', raw: '', sources: null, error: null, stopped: false, uid: 'a' + Date.now() })
   messages.value.push(ans)
+  currentAns = ans
   await nextTick(); scrollBottom()
 
   // 流式降频：chunk 先进 raw，每 100ms 同步到 content 触发一次渲染（长回答不再逐字卡顿）
@@ -408,18 +430,24 @@ async function ask(qOverride, opts = {}) {
       abortCtl = null
       flushNow()
       ans.sources = done.sources
-      currentId.value = done.sessionId
-      // 取回落库后的消息 id，点赞/踩要用
-      try {
-        const saved = await api.get('/api/sessions/' + done.sessionId)
-        const last = saved[saved.length - 1]
-        if (last && last.role === 'assistant') {
-          ans.id = last.id
-          ans.content = last.content
-        }
-      } catch (e) { /* ignore */ }
+      // 用户可能已切到其他会话：只有仍停留在这个会话时才跟随/回读
+      const stillHere = !askSid || currentId.value === askSid
+      if (stillHere) currentId.value = done.sessionId
+      if (stillHere) {
+        // 取回落库后的消息 id，点赞/踩要用
+        try {
+          const saved = await api.get('/api/sessions/' + done.sessionId)
+          const last = saved[saved.length - 1]
+          if (last && last.role === 'assistant') {
+            ans.id = last.id
+            ans.content = last.content
+          }
+        } catch (e) { /* ignore */ }
+      }
+      sessionCache.delete(done.sessionId) // 已入库，下次进入重新拉取
+      currentAns = null
       await reloadSessions()
-      scrollBottom()
+      if (currentId.value === done.sessionId) scrollBottom()
     },
     (msg) => {
       if (String(msg).includes('abort')) return
@@ -427,6 +455,8 @@ async function ask(qOverride, opts = {}) {
       abortCtl = null
       flushNow()
       ans.error = msg
+      currentAns = null
+      if (askSid) sessionCache.delete(askSid)
       scrollBottom()
     },
     abortCtl.signal,
@@ -436,11 +466,13 @@ async function ask(qOverride, opts = {}) {
 function stopGen() {
   if (abortCtl) abortCtl.abort()
   generating.value = false
-  const last = messages.value[messages.value.length - 1]
-  if (last?.role === 'assistant') {
-    if (last.raw) last.content = last.raw   // 保留已生成的部分，不丢尾部
-    last.stopped = true
+  // 用 ask 闭包里的回答对象定位；用户切到别的会话时 messages 已被替换，不能按末尾猜
+  const target = currentAns || messages.value[messages.value.length - 1]
+  if (target?.role === 'assistant') {
+    if (target.raw) target.content = target.raw   // 保留已生成的部分，不丢尾部
+    target.stopped = true
   }
+  currentAns = null
 }
 
 function copyAns(m) {
