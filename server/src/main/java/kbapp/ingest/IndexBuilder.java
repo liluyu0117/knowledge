@@ -184,6 +184,36 @@ public class IndexBuilder {
     public Status status() { return status.get(); }
     public boolean isRunning() { return running.get(); }
 
+    /**
+     * 从指定库的索引里立即删除这些文档（文件/文件夹被物理删除后调用，让检索即时生效）。
+     * 返回删除的文档数；-1 = 正在构建（跳过，交给本次构建的清理逻辑）；-2 = 删除失败（同样留给下次构建兜底）。
+     */
+    public int removeDocs(String kbId, List<String> relPaths) {
+        if (relPaths == null || relPaths.isEmpty()) return 0;
+        if (running.get()) return -1;
+        kbapp.kb.KbRegistry.KbEntry kb = registry.byId(kbId);
+        if (kb == null) return 0;
+        Path luceneDir = registry.indexDir(kb);
+        if (!Files.exists(luceneDir)) return 0; // 尚未建过索引，无需删除
+        Analyzer analyzer = AnalyzerFactory.create(config.get().getRag().getAnalyzer());
+        int removed = 0;
+        try (Directory dir = FSDirectory.open(luceneDir);
+             IndexWriter writer = new IndexWriter(dir, new IndexWriterConfig(analyzer)
+                     .setOpenMode(IndexWriterConfig.OpenMode.CREATE_OR_APPEND))) {
+            for (String p : relPaths) {
+                removed += writer.deleteDocuments(new Term(IndexSchema.DOC_PATH, p));
+            }
+            writer.commit();
+            searcherService.refresh(luceneDir);
+        } catch (Exception e) {
+            log.warn("立即删除索引文档失败（留给下次构建清理）：{}", e.toString());
+            return -2;
+        } finally {
+            analyzer.close();
+        }
+        return removed;
+    }
+
     /** 全局最近一次构建时间（多库取最大）。 */
     public long lastBuildAt() {
         long t = 0;

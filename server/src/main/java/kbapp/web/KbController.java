@@ -493,8 +493,10 @@ public class KbController {
         }
         try {
             // 先清这些文件的标签元数据，再自底向上删除目录树
+            List<String> rels = new ArrayList<>();
             for (Path f : files) {
                 String rel = root.relativize(f).toString().replace('\\', '/');
+                rels.add(rel);
                 docMeta.removeDoc(kb.id(), rel);
             }
             try (var s = Files.walk(target)) {
@@ -502,8 +504,11 @@ public class KbController {
                     try { Files.delete(p); } catch (IOException ignored) { }
                 });
             }
+            // 让检索立即生效：从索引移除这些文档（构建中则跳过，由构建清理兜底）
+            int idx = builder.removeDocs(id, rels);
             m.put("ok", true);
             m.put("removed", files.size());
+            if (idx < 0) m.put("indexDeferred", true);
         } catch (IOException e) {
             m.put("ok", false);
             m.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
@@ -526,7 +531,10 @@ public class KbController {
         }
         try {
             Files.delete(target);
-            docMeta.removeDoc(kb.id(), relPath.replace('\\', '/'));
+            String rel = relPath.replace('\\', '/');
+            docMeta.removeDoc(kb.id(), rel);
+            // 让检索立即生效：从索引移除该文档（构建中则跳过，由构建清理兜底）
+            builder.removeDocs(id, List.of(rel));
             // 清理因此变空的目录，避免树里留下空壳
             Path parent = target.getParent();
             while (parent != null && !parent.equals(root)) {
