@@ -314,24 +314,69 @@ function remove() {
   removeNote({ id: currentId.value, title: title.value || '未命名笔记' })
 }
 
-/** 拖拽笔记到文件夹分组完成移动 */
-function onDragStart(n, e) {
-  dragNoteId.value = n.id
-  e.dataTransfer.effectAllowed = 'move'
-  e.dataTransfer.setData('text/plain', n.title)
+/** 笔记拖拽（pointer 事件实现，不依赖浏览器原生 DnD，落点自己算） */
+const drag = ref(null)   // { id, title, x, y, folder }
+const dropFolder = ref(null)   // 拖拽悬停的文件夹分组（高亮用）
+
+function onHandleDown(n, e) {
+  if (e.button !== 0) return
+  e.preventDefault()
+  drag.value = { id: n.id, title: n.title, x: e.clientX, y: e.clientY, folder: null }
+  // document 级捕获阶段监听：无论落点在哪、有没有指针捕获干扰，事件都收得到
+  document.addEventListener('pointermove', onPointerMove, true)
+  document.addEventListener('pointerup', onPointerUp, true)
 }
 
-function onDragLeave(e, folder) {
-  if (!e.currentTarget.contains(e.relatedTarget)) {
-    if (dropFolder.value === folder) dropFolder.value = null
+function onPointerMove(e) {
+  const d = drag.value
+  if (!d) return
+  d.x = e.clientX
+  d.y = e.clientY
+  const folder = nearestFolder(e.clientX, e.clientY)
+  d.folder = folder
+  dropFolder.value = folder
+}
+
+/** 落点解析：优先用事件目标上溯（浏览器原生语义，最可靠），再退回坐标就近吸附 */
+function folderFromEvent(e) {
+  const t = e && e.target
+  const wrap = t && t.closest ? t.closest('.ngwrap') : null
+  if (wrap) return wrap.getAttribute('data-folder') || ''
+  try { return nearestFolder(e.clientX, e.clientY) } catch (_) { return null }
+}
+
+/** 就近吸附：光标离哪个分组矩形最近就落到哪（48px 容差，拖到空隙/边缘也能识别） */
+function nearestFolder(x, y) {
+  let best = null
+  let bestD = Infinity
+  for (const w of document.querySelectorAll('.ngwrap')) {
+    const r = w.getBoundingClientRect()
+    const dx = Math.max(r.left - x, 0, x - r.right)
+    const dy = Math.max(r.top - y, 0, y - r.bottom)
+    const dist = Math.hypot(dx, dy)
+    if (dist < bestD) { bestD = dist; best = w }
   }
+  if (!best || bestD > 48) return null
+  return best.getAttribute('data-folder') || ''
 }
 
-function onDropToGroup(folder) {
-  const id = dragNoteId.value
+function onPointerUp(e) {
+  document.removeEventListener('pointermove', onPointerMove, true)
+  document.removeEventListener('pointerup', onPointerUp, true)
+  const d = drag.value
+  drag.value = null
   dropFolder.value = null
-  if (!id) return
-  const n = notes.value.find((x) => x.id === id)
+  if (!d) return
+  // 一律以松手位置为准（过程事件可能丢失，不能作为判定依据）
+  let folder = null
+  try {
+    folder = folderFromEvent(e)
+  } catch (err) {
+    return
+  }
+
+  if (folder === null) return
+  const n = notes.value.find((x) => x.id === d.id)
   if (!n || (n.folder || '') === folder) return
   doMove(n, folder)
 }
@@ -348,7 +393,6 @@ async function doMove(n, folder) {
     ElMessage.error('移动失败：' + (e.message || e))
   } finally {
     movingId.value = ''
-    dragNoteId.value = ''
   }
 }
 
@@ -500,19 +544,16 @@ const rendered = computed(() => (type.value === 'md'
         <div v-if="!notes.length && !isDraft" class="nempty">还没有笔记，点上方新建</div>
 
         <template v-for="g in noteGroups" :key="g.folder || '__root__'">
-        <div class="ngwrap" :class="{ dropt: dropFolder === g.folder && dragNoteId }"
-             @dragover.prevent="dropFolder = g.folder"
-             @dragleave="onDragLeave($event, g.folder)"
-             @drop.prevent="onDropToGroup(g.folder)">
+        <div class="ngwrap" :class="{ dropt: dropFolder === g.folder && drag }" :data-folder="g.folder">
           <div class="ngroup">
             <el-icon class="ng-ic"><FolderOpened /></el-icon>{{ g.name }}
             <span class="ng-n">{{ g.items.length }}</span>
           </div>
           <div v-for="n in g.items" :key="n.id" class="nitem"
-               :class="{ on: n.id === currentId, dragging: dragNoteId === n.id }" :style="g.folder ? 'padding-left:14px' : ''"
+               :class="{ on: n.id === currentId, dragging: drag && drag.id === n.id }" :style="g.folder ? 'padding-left:14px' : ''"
                @click="select(n)">
-          <span class="drag-handle" draggable="true" title="拖动到文件夹分组即可移动"
-                @dragstart="onDragStart(n, $event)" @dragend="dragNoteId = ''">⠿</span>
+          <span class="drag-handle" title="按住拖动到文件夹分组即可移动"
+                @pointerdown.stop.prevent="onHandleDown(n, $event)">⠿</span>
           <span class="nt" :title="n.title + '.' + extOf(n.type) + '（双击可重命名）'" @dblclick.stop="renameDialog(n)">{{ n.title }}</span>
           <div class="d">{{ extOf(n.type) }} · {{ n.updatedAt.slice(5, 16).replace('T', ' ') }}</div>
           <span class="nops">
@@ -579,6 +620,11 @@ const rendered = computed(() => (type.value === 'md'
         </el-text>
       </div>
     </el-main>
+    <!-- 拖拽跟随浮层 -->
+    <div v-if="drag" class="drag-ghost" :style="{ left: drag.x + 14 + 'px', top: drag.y + 8 + 'px' }">
+      <span class="dg-ic">⠿</span>{{ drag.title }}
+      <span v-if="drag.folder !== null" class="dg-to">→ {{ drag.folder || '根目录' }}</span>
+    </div>
     <PreviewDrawer :target="preview" :kb-id="refKbId" @close="preview.open = false" />
 
     <!-- 新建笔记：先选定格式 -->
@@ -614,6 +660,12 @@ const rendered = computed(() => (type.value === 'md'
   color:var(--ink3);font-weight:600}
 .ngroup .ng-ic{font-size:12px}
 .ngroup .ng-n{margin-left:auto}
+.drag-ghost{position:fixed;z-index:4000;pointer-events:none;background:var(--card);
+  border:1px solid var(--accent);border-radius:8px;padding:5px 10px;font-size:var(--fs-xs);
+  box-shadow:0 6px 18px rgba(20,24,38,.18);color:var(--ink);max-width:260px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drag-ghost .dg-ic{color:var(--ink3);margin-right:5px;letter-spacing:-1px}
+.drag-ghost .dg-to{color:var(--accent);margin-left:6px;font-weight:600}
 .ngwrap{border-radius:8px;transition:background var(--t-fast) var(--ease),outline var(--t-fast) var(--ease)}
 .ngwrap.dropt{background:var(--accent-soft);outline:1.5px dashed var(--accent)}
 .nitem.dragging{opacity:.4}
@@ -622,6 +674,7 @@ const rendered = computed(() => (type.value === 'md'
   transition:opacity var(--t-fast) var(--ease);user-select:none}
 .nitem:hover .drag-handle{opacity:.75}
 .drag-handle:active{cursor:grabbing}
+body:has(.drag-ghost),body:has(.drag-ghost) *{cursor:grabbing !important;user-select:none}
 .nitem.dragging{opacity:.4}
 .nitem{position:relative;padding:9px 11px 9px 18px;border-radius:8px;cursor:pointer;font-size:var(--fs-sm);line-height:1.5}
 .nitem:hover{background:var(--el-fill-color-light)}
