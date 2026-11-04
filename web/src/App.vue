@@ -81,7 +81,9 @@ onUnmounted(() => clearTimeout(statusTimer))
     </aside>
     <router-view v-slot="{ Component }">
       <transition name="el-fade-in-linear">
-        <component :is="Component" />
+        <keep-alive :include="['AskView', 'NotesView']">
+          <component :is="Component" />
+        </keep-alive>
       </transition>
     </router-view>
   </div>

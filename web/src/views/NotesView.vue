@@ -1,5 +1,6 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+defineOptions({ name: 'NotesView' }) // keep-alive include 依赖此名字
+import { ref, computed, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
 import { api } from '../api'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -278,6 +279,13 @@ async function removeNote(n) {
     removingId.value = ''
   }
 }
+
+let everShown = false
+/** keep-alive 切回本页：刷新笔记列表；草稿与编辑内容不受影响 */
+onActivated(() => {
+  if (!everShown) { everShown = true; return } // 首次进入由 onMounted 负责
+  load()
+})
 
 onMounted(() => {
   load()

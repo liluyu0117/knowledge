@@ -1,5 +1,6 @@
 <script setup>
-import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
+defineOptions({ name: 'AskView' }) // keep-alive include 依赖此名字
+import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount, onActivated } from 'vue'
 import { api, askSse, downloadText } from '../api'
 import { preview } from '../store/preview'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
@@ -255,6 +256,18 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
+
+let everShown = false
+/** keep-alive 切回本页：静默刷新会话/智能体/设置，不影响正在生成的回答 */
+onActivated(async () => {
+  if (!everShown) { everShown = true; return } // 首次进入由 onMounted 负责
+  const results = await Promise.allSettled([
+    reloadSessions(),
+    loadAgents(),
+    api.get('/api/settings').then((v) => { settings.value = v }),
+  ])
+  for (const r of results) if (r.status === 'rejected') console.warn('切回刷新失败:', r.reason)
+})
 
 /** 全局快捷键：Ctrl/Cmd+K 新会话，Esc 停止生成（输入框内不劫持 Esc） */
 function onGlobalKey(e) {
