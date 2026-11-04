@@ -412,29 +412,6 @@ async function doMove(n, folder) {
   }
 }
 
-/** 移动菜单指令：选择文件夹直接移动；「新建」则先建再移 */
-function onMoveCommand(f, n) {
-  if (f === '__new__') {
-    ElMessageBox.prompt('新建文件夹（可多级，如「上线方案/2026-11」）', '移动到新文件夹', {
-      inputPlaceholder: '文件夹名',
-      confirmButtonText: '移动到这里', cancelButtonText: '取消',
-    }).then(async ({ value }) => {
-      const name = (value || '').trim()
-      if (!name) return
-      try {
-        const r = await api.post('/api/notes/folders?name=' + encodeURIComponent(name))
-        if (!r.ok) { ElMessage.error(r.error || '创建失败'); return }
-        noteFolders.value = r.folders
-        doMove(n, name)
-      } catch (e) {
-        ElMessage.error('创建失败：' + (e.message || e))
-      }
-    }).catch(() => {})
-    return
-  }
-  doMove(n, f)
-}
-
 /** 新建文件夹（物理目录，供后续归类） */
 function addFolder() {
   ElMessageBox.prompt('输入文件夹名（可多级，如「上线方案/2026-11」）', '新建文件夹', {
@@ -575,20 +552,6 @@ const rendered = computed(() => (type.value === 'md'
           <span class="nt" :title="n.title + '.' + extOf(n.type) + '（双击可重命名）'" @dblclick.stop="renameDialog(n)">{{ n.title }}</span>
           <div class="d">{{ extOf(n.type) }} · {{ n.updatedAt.slice(5, 16).replace('T', ' ') }}</div>
           <span class="nops">
-            <el-dropdown trigger="click" popper-class="move-dd"
-                        @command="(f) => onMoveCommand(f, n)" @click.stop>
-              <el-tooltip content="移动到文件夹" placement="top">
-                <el-icon @click.stop><FolderOpened /></el-icon>
-              </el-tooltip>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <div class="mv-label">移动「{{ n.title }}」到</div>
-                  <el-dropdown-item :command="''" :class="{ cur: (n.folder || '') === '' }">根目录</el-dropdown-item>
-                  <el-dropdown-item v-for="f in noteFolders.filter((x) => x !== n.folder)" :key="f" :command="f">{{ f }}</el-dropdown-item>
-                  <el-dropdown-item command="__new__" divided>＋ 新建文件夹…</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
             <el-tooltip content="删除" placement="top">
               <el-icon class="del" :class="{ busy: removingId === n.id }" @click.stop="removeNote(n)"><Delete /></el-icon>
             </el-tooltip>
@@ -714,9 +677,6 @@ body:has(.drag-ghost),body:has(.drag-ghost) *{cursor:grabbing !important;user-se
 .nops .el-icon.del:hover{color:var(--el-color-danger)}
 .nops .el-icon.del.busy{opacity:.35;pointer-events:none}
 .fmt-folder{display:flex;align-items:center;gap:8px;margin-top:12px}
-.move-dd .mv-label{font-size:var(--fs-2xs);color:var(--el-text-color-secondary);
-  padding:6px 12px 2px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.move-dd .el-dropdown-menu__item.cur{background:var(--accent-soft);color:var(--accent)}
 .ff-label{font-size:var(--fs-xs);color:var(--ink3);flex:0 0 auto}
 .nempty{padding:14px 10px;font-size:var(--fs-xs);color:var(--el-text-color-secondary);text-align:center}
 .nmain{display:flex;flex-direction:column;padding:0;overflow:hidden}
