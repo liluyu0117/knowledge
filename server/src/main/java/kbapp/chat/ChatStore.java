@@ -1,6 +1,7 @@
 package kbapp.chat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Set;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Paths;
@@ -57,6 +58,14 @@ public class ChatStore {
         } catch (Exception e) {
             throw new IllegalStateException("初始化 chat.db 失败", e);
         }
+    }
+
+    /** 正在进行流式生成的会话集合（跨请求共享，供会话列表显示「生成中」标记）。 */
+    private static final Set<String> ACTIVE_ASKS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    public static void markAsk(String id, boolean on) {
+        if (id == null || id.isBlank()) return;
+        if (on) ACTIVE_ASKS.add(id); else ACTIVE_ASKS.remove(id);
     }
 
     public synchronized Session createSession(String title) { return createSession(title, null); }
@@ -150,6 +159,7 @@ public class ChatStore {
                 m.put("updatedAt", rs.getString(4));
                 m.put("archived", rs.getInt(5) == 1);
                 m.put("agentId", rs.getString(6));
+                m.put("generating", ACTIVE_ASKS.contains(rs.getString(1)));
                 out.add(m);
             }
         } catch (Exception e) {

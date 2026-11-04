@@ -6,7 +6,7 @@ import { preview } from '../store/preview'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft, Lock, Setting, Select, CloseBold, ArrowUp } from '@element-plus/icons-vue'
+import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft, Lock, Setting, Select, CloseBold, ArrowUp, Loading } from '@element-plus/icons-vue'
 
 const sessions = ref([])
 const currentId = ref('')
@@ -254,6 +254,11 @@ onMounted(async () => {
     agentId.value = agentList.value[0].id
     await applyAgentScope(agentId.value)
   }
+  // 刷新页面后自动回到最近使用的会话（进行中的半截回答后端已保存，能直接看到）
+  const last = localStorage.getItem('kb-last-session')
+  if (last && sessions.value.some((x) => x.id === last && !x.archived)) {
+    openSession(last)
+  }
   window.addEventListener('keydown', onGlobalKey)
 })
 
@@ -297,11 +302,17 @@ function groupOf(s) {
   return '更早'
 }
 
+function rememberSession(id) {
+  if (id) localStorage.setItem('kb-last-session', id)
+  else localStorage.removeItem('kb-last-session')
+}
+
 async function openSession(id) {
   // 暂存当前会话的实时消息（可能含生成中的回答），切回来时恢复
   if (currentId.value && messages.value.length) sessionCache.set(currentId.value, messages.value)
   const s = sessions.value.find((x) => x.id === id)
   currentId.value = id
+  rememberSession(id)
   if (sessionCache.has(id)) {
     // 该会话有实时视图（比如正在生成回答）：直接恢复，不覆盖
     messages.value = sessionCache.get(id)
@@ -317,6 +328,7 @@ async function openSession(id) {
 function newSession() {
   if (currentId.value && messages.value.length) sessionCache.set(currentId.value, messages.value)
   currentId.value = ''
+  rememberSession('')
   messages.value = []
   if (!agentId.value && agentList.value.length) agentId.value = agentList.value[0].id
   applyAgentScope(agentId.value)
@@ -393,6 +405,7 @@ async function ask(qOverride, opts = {}) {
       const t = q.replace(/\s+/g, ' ').slice(0, 18) || '新会话'
       const created = await api.post('/api/sessions?title=' + encodeURIComponent(t))
       currentId.value = created.id
+      rememberSession(created.id)
       reloadSessions()
     } catch (e) { /* 失败则退回旧行为：由后端生成完成后创建 */ }
   }
@@ -700,7 +713,10 @@ function onBodyClick(e, m) {
           </div>
           <template v-if="!collapsed[g.key]">
             <div v-for="s in g.sessions" :key="s.id" class="it" :class="{ on: s.id === currentId }" @click="openSession(s.id)">
-              <span class="t">{{ s.title }}</span>
+              <span class="t">
+                <el-icon v-if="s.generating" class="gen-spin" title="正在生成回答"><Loading /></el-icon>
+                {{ s.title }}
+              </span>
               <span class="ops" :class="{ busy: sessionBusyId === s.id }">
                 <el-icon @click.stop="renameSession(s)" title="重命名"><EditPen /></el-icon>
                 <el-icon @click.stop="archiveSession(s, true)" title="归档"><Collection /></el-icon>
@@ -1106,6 +1122,9 @@ function onBodyClick(e, m) {
 .color-dot{width:20px;height:20px;border-radius:6px;cursor:pointer;border:2px solid transparent}
 .model-tag{font-size:var(--fs-xs);color:var(--ink2);background:var(--mist);border-color:var(--line)}
 .scope-hint{color:var(--accent);opacity:.85}
+/* 会话列表：正在生成的标记 */
+.gen-spin{font-size:12px;color:var(--accent);margin-right:4px;animation:gen-rot 1s linear infinite;vertical-align:-2px}
+@keyframes gen-rot{to{transform:rotate(360deg)}}
 /* 提交中的图标按钮：置灰并禁用点击，避免重复触发 */
 .ops.busy, .rate.busy{opacity:.35;pointer-events:none}
 .form-tip{font-size:var(--fs-2xs);color:var(--ink3);margin-top:4px;line-height:1.4}

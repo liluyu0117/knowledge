@@ -94,6 +94,7 @@ public class ChatService {
             if (bound == null || bound.isBlank()) chat.bindAgent(sid, agent.id());
         }
         String finalSid = sid;
+        chat.markAsk(finalSid, true); // 会话列表「生成中」标记
 
         // 检索
         List<SearchHit> hits;
@@ -104,6 +105,7 @@ public class ChatService {
         } catch (Exception e) {
             log.warn("检索失败", e);
             String msg = String.valueOf(e.getMessage());
+            chat.markAsk(finalSid, false);
             if (msg.contains("知识库不存在")) {
                 // 智能体绑定的库被删了：告诉用户怎么修，而不是抛底层异常
                 return Flux.just(new AskEvent.Error(
@@ -121,6 +123,7 @@ public class ChatService {
                       + "可以确认这份文档是否已加入知识库并完成索引，或换一个更贴近文档原话的问法。";
             chat.appendMessage(finalSid, "user", question, null, null);
             chat.appendMessage(finalSid, "assistant", msg, List.of(), model);
+            chat.markAsk(finalSid, false);
             return Flux.just(new AskEvent.Delta(msg), new AskEvent.Done(finalSid, msg, List.of(), model));
         }
 
@@ -178,7 +181,7 @@ public class ChatService {
             if (full.length() > 0) {
                 chat.appendMessage(finalSid, "assistant", full.toString() + "\n\n（已停止生成）", sources, model);
             }
-        });
+        }).doFinally((sig) -> chat.markAsk(finalSid, false));
     }
 
     /** 会话标题：压掉多余空白与句末标点，超长截断，避免列表里一长串重复问句。 */
