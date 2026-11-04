@@ -55,7 +55,7 @@ public class KbController {
             m.put("id", e.id());
             m.put("name", e.name());
             m.put("path", e.fixed() ? "(跟随设置页数据源目录)" : e.sourcePath());
-
+            m.put("fixed", e.fixed());
             out.add(m);
         }
         return out;
@@ -582,6 +582,7 @@ public class KbController {
         KbRegistry.KbEntry e = registry.byId(id);
         Map<String, Object> m = new LinkedHashMap<>();
         if (e == null) { m.put("ok", false); m.put("error", "知识库不存在"); return m; }
+        if (e.fixed()) { m.put("ok", false); m.put("error", "内置知识库「" + e.name() + "」不可删除"); return m; }
 
         // 删除索引目录与复制的工作副本（源目录不动）；被占用而删不掉的必须如实上报
         List<String> leftover = new ArrayList<>(deleteTree(registry.indexDir(e)));

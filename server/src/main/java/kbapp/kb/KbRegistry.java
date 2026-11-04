@@ -49,7 +49,17 @@ public class KbRegistry {
             log.warn("读取 kbs.json 失败，使用默认", e);
         }
         migrateDefault();
+        ensureNotesKb();
         save();
+    }
+
+    /** 内置「我的笔记」库：笔记正文落在 kbdata/notes/，随库进索引；fixed 不可删。 */
+    private void ensureNotesKb() {
+        boolean exists = entries.stream().anyMatch((e) -> e.id().equals(kbapp.notes.NotesStore.NOTES_KB_ID));
+        if (exists) return;
+        entries.add(new KbEntry(kbapp.notes.NotesStore.NOTES_KB_ID, "我的笔记", "",
+                java.time.LocalDateTime.now().withNano(0).toString(), true));
+        log.info("已注册内置知识库「我的笔记」（笔记正文自动进入检索）");
     }
 
     /**

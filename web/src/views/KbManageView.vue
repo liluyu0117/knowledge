@@ -706,9 +706,10 @@ const failedList = computed(() => st.value?.last?.failed || [])
         <div v-for="k in kbs" :key="k.id" class="kitem" :class="{ on: k.id === currentId }" @click="selectKb(k)">
           <div class="knm">
             {{ k.name }}
+            <span v-if="k.fixed" class="kfixed">内置</span>
             <span v-if="st && st.runningKbId === k.id" class="kdot" />
           </div>
-          <div class="kst"><span>{{ k.path }}</span></div>
+          <div class="kst"><span>{{ k.fixed ? '笔记自动进入检索' : k.path }}</span></div>
         </div>
         <el-empty v-if="!kbs.length" description="还没有知识库" :image-size="60" />
       </div>
@@ -730,7 +731,8 @@ const failedList = computed(() => st.value?.last?.failed || [])
         <el-tooltip content="增量构建：只处理新增与变更的文件，向量按内容 hash 复用，不重复调用接口" placement="bottom">
           <el-button size="small" :disabled="!currentId || runningForThis" :loading="rebuildLoading" @click="rebuildKb">构建索引</el-button>
         </el-tooltip>
-        <el-button size="small" type="danger" plain :disabled="!currentId || kbDeleteBusy" :loading="kbDeleteBusy" @click="deleteKb">删除</el-button>
+        <el-button size="small" type="danger" plain
+                   :disabled="!currentId || kbDeleteBusy || currentKb?.fixed" :loading="kbDeleteBusy" @click="deleteKb">删除</el-button>
         <span class="hstat" v-if="stats">
           <span class="hs"><b>{{ stats.files }}</b> 文件</span>
           <span class="hs"><b>{{ stats.indexable }}</b> 可索引</span>
@@ -1081,6 +1083,8 @@ const failedList = computed(() => st.value?.last?.failed || [])
 .kitem.on{background:var(--el-color-primary-light-9);border-color:#C7C8FA}
 .kitem .knm{font-size:var(--fs-base);font-weight:600;color:var(--el-text-color-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px}
 .kdot{width:6px;height:6px;border-radius:50%;background:var(--el-color-warning);animation:pulse 1.2s ease-in-out infinite}
+.kfixed{font-size:10px;color:var(--accent);background:var(--accent-soft);
+  border-radius:4px;padding:0 4px;margin-left:4px;flex:0 0 auto}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
 .kitem .kst{font-size:var(--fs-xs);color:var(--el-text-color-secondary);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kbmain{display:flex;flex-direction:column;overflow:hidden;padding:0 var(--page-x) 20px}
