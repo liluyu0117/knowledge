@@ -317,6 +317,13 @@ function remove() {
 /** 笔记拖拽（pointer 事件实现，不依赖浏览器原生 DnD，落点自己算） */
 const drag = ref(null)   // { id, title, x, y, folder }
 const dropFolder = ref(null)   // 拖拽悬停的文件夹分组（高亮用）
+// 分组折叠状态（folder -> true 表示收起），记住用户的选择
+const collapsed = ref(JSON.parse(localStorage.getItem('kb-note-collapsed') || '{}'))
+function toggleGroup(folder) {
+  const next = { ...collapsed.value, [folder || '__root__']: !collapsed.value[folder || '__root__'] }
+  collapsed.value = next
+  localStorage.setItem('kb-note-collapsed', JSON.stringify(next))
+}
 
 function onHandleDown(n, e) {
   if (e.button !== 0) return
@@ -382,15 +389,24 @@ function onPointerUp(e) {
 }
 
 async function doMove(n, folder) {
+  // 乐观更新：先把本地数据改掉，UI 立即到位（拖拽松手即时生效）
+  const idx = notes.value.findIndex((x) => x.id === n.id)
+  const oldFolder = (idx >= 0 ? notes.value[idx].folder : n.folder) || ''
+  if (folder && !noteFolders.value.includes(folder)) noteFolders.value.push(folder)
+  if (idx >= 0) notes.value[idx] = { ...notes.value[idx], folder, updatedAt: notes.value[idx].updatedAt }
+  if (currentId.value === n.id) draftFolder.value = folder
   movingId.value = n.id
   try {
     const r = await api.post(`/api/notes/${n.id}/move?folder=${encodeURIComponent(folder)}`)
-    if (!r.ok) { ElMessage.error(r.error || '移动失败'); return }
-    ElMessage.success(folder ? `已移动到「${folder}」` : '已移动到根目录')
-    if (currentId.value === n.id) draftFolder.value = folder
-    load()
+    if (!r.ok) throw new Error(r.error || '移动失败')
+    ElMessage({ message: folder ? `已移动到「${folder}」` : '已移动到根目录', type: 'success', duration: 1200 })
   } catch (e) {
+    // 失败回滚
+    const i2 = notes.value.findIndex((x) => x.id === n.id)
+    if (i2 >= 0) notes.value[i2] = { ...notes.value[i2], folder: oldFolder }
+    if (currentId.value === n.id) draftFolder.value = oldFolder
     ElMessage.error('移动失败：' + (e.message || e))
+    load()
   } finally {
     movingId.value = ''
   }
@@ -545,10 +561,12 @@ const rendered = computed(() => (type.value === 'md'
 
         <template v-for="g in noteGroups" :key="g.folder || '__root__'">
         <div class="ngwrap" :class="{ dropt: dropFolder === g.folder && drag }" :data-folder="g.folder">
-          <div class="ngroup">
+          <div class="ngroup" @click="toggleGroup(g.folder)">
+            <span class="ng-arrow" :class="{ off: collapsed[g.folder || '__root__'] }">▾</span>
             <el-icon class="ng-ic"><FolderOpened /></el-icon>{{ g.name }}
             <span class="ng-n">{{ g.items.length }}</span>
           </div>
+          <template v-if="!collapsed[g.folder || '__root__']">
           <div v-for="n in g.items" :key="n.id" class="nitem"
                :class="{ on: n.id === currentId, dragging: drag && drag.id === n.id }" :style="g.folder ? 'padding-left:14px' : ''"
                @click="select(n)">
@@ -576,6 +594,7 @@ const rendered = computed(() => (type.value === 'md'
             </el-tooltip>
           </span>
           </div>
+          </template>
         </div>
         </template>
       </div>
@@ -657,7 +676,10 @@ const rendered = computed(() => (type.value === 'md'
 .nside{background:#FBFBFC;border-right:1px solid var(--el-border-color-light);padding:12px 8px;overflow:auto}
 .nlist{margin-top:8px}
 .ngroup{display:flex;align-items:center;gap:5px;padding:8px 11px 4px;font-size:var(--fs-2xs);
-  color:var(--ink3);font-weight:600}
+  color:var(--ink3);font-weight:600;cursor:pointer;border-radius:6px;user-select:none}
+.ngroup:hover{color:var(--ink2);background:var(--mist)}
+.ng-arrow{font-size:9px;transition:transform var(--t-fast) var(--ease);width:8px;flex:0 0 8px}
+.ng-arrow.off{transform:rotate(-90deg)}
 .ngroup .ng-ic{font-size:12px}
 .ngroup .ng-n{margin-left:auto}
 .drag-ghost{position:fixed;z-index:4000;pointer-events:none;background:var(--card);
