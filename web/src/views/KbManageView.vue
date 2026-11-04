@@ -545,7 +545,7 @@ function onRowDown(n, e) {
 function onRowMove(e) {
   if (!press) return
   if (!press.started) {
-    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) return
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 4) return
     press.started = true
     dragFile.value = { path: press.n.path, name: press.n.name, x: e.clientX, y: e.clientY }
   }
@@ -914,12 +914,15 @@ const failedList = computed(() => st.value?.last?.failed || [])
             </div>
             <div class="tree">
               <div v-for="n in flatTree" :key="n.type + n.path" class="tnode"
-                   :class="{ folder: n.type === 'folder', more: n.type === 'more', 'drop-in': n.type === 'folder' && dropTarget === n.path }"
+                   :class="{ folder: n.type === 'folder', more: n.type === 'more', 'drop-in': n.type === 'folder' && dropTarget === n.path, dragging: dragFile && dragFile.path === n.path }"
                    :data-folder="n.type === 'folder' ? n.path : null"
                    @pointerdown="n.type === 'file' ? onRowDown(n, $event) : null"
                    :style="{ paddingLeft: 16 + n.depth * 20 + 'px', backgroundImage: guides(n.depth) }"
                    @click="n.type === 'folder' ? toggleNode(n) : n.type === 'more' ? showMore(n) : openFile(n)">
-                <span class="caret" v-if="n.type !== 'more'">{{ n.type === 'folder' ? (expanded[n.path] ? '▾' : '▸') : '' }}</span>
+                <span class="caret" v-if="n.type !== 'more'">
+                  <span v-if="n.type === 'file'" class="drag-handle" title="按住拖动到文件夹即可移动">⠿</span>
+                  <template v-else>{{ expanded[n.path] ? '▾' : '▸' }}</template>
+                </span>
                 <el-icon class="tic" v-if="n.type !== 'more'"><component :is="n.type === 'folder' ? Folder : Document" /></el-icon>
                 <span class="nm">{{ n.name }}</span>
                 <template v-if="n.type !== 'more'">
@@ -1186,7 +1189,15 @@ const failedList = computed(() => st.value?.last?.failed || [])
 .tnode.folder{font-weight:600}
 .tnode.more{font-style:italic;color:var(--el-color-primary);font-weight:400}
 .tnode.more .nm{font-size:var(--fs-xs)}
-.tnode .caret{font-size:9px;color:var(--el-text-color-secondary);width:10px}
+.tnode .caret{font-size:9px;color:var(--el-text-color-secondary);width:10px;
+  display:inline-flex;align-items:center;justify-content:center;flex:0 0 10px}
+.tnode .drag-handle{opacity:0;cursor:grab;font-size:11px;letter-spacing:-1px;
+  color:var(--ink3);transition:opacity var(--t-fast) var(--ease);user-select:none}
+.tnode:hover .drag-handle{opacity:.8}
+.tnode .drag-handle:active{cursor:grabbing}
+.tnode.dragging{opacity:.4}
+.tnode.dragging .drag-handle{opacity:1}
+body:has(.drag-ghost),body:has(.drag-ghost) *{cursor:grabbing !important;user-select:none}
 .tnode .tic{color:var(--el-text-color-secondary)}
 .tnode .nm{color:var(--el-text-color-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tnode .st-slot{width:64px;flex:0 0 64px;margin-left:auto;display:flex;justify-content:flex-end;align-items:center}
