@@ -6,7 +6,7 @@ import { preview } from '../store/preview'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft, Lock, Setting, Select, CloseBold, ArrowUp, Loading, Download } from '@element-plus/icons-vue'
+import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft, Lock, Setting, Select, CloseBold, Loading, Download } from '@element-plus/icons-vue'
 
 const sessions = ref([])
 const currentId = ref('')
@@ -46,8 +46,6 @@ const activeFolder = ref('')
 const agentKbs = ref([{ id: 'default', name: '默认知识库' }])
 const settings = ref(null)
 const showArchived = ref(false)
-const renaming = ref('')
-const renameText = ref('')
 
 const activeList = computed(() => sessions.value.filter((s) => !s.archived))
 const archivedList = computed(() => sessions.value.filter((s) => s.archived))
@@ -80,9 +78,6 @@ const lockedAgent = computed(() => {
   const s = sessions.value.find((x) => x.id === currentId.value)
   return s?.agentId ? agentOf(s.agentId) : null
 })
-/** 范围条显示「全部」，内部空串表示不过滤 */
-/** 操作条上显示的检索范围文案 */
-const scopeLabel = computed(() => (activeFolder.value ? activeFolder.value : '全部'))
 /** 检索设置有非默认项时给入口加个角标 */
 const scopeDirty = computed(() =>
   !!activeFolder.value || topK.value !== 5 || styleMode.value !== 'normal' || askTags.value.length > 0)
@@ -225,7 +220,6 @@ const agentGroups = computed(() => {
   return groups
 })
 /** 当前将被使用的智能体（会话未建立时也能确定） */
-const activeAgent = computed(() => agentOf(agentId.value))
 /** 智能体绑定的知识库是否已被删除 */
 const kbMissing = computed(() => {
   if (!agentKbs.value.length) return false
@@ -235,12 +229,6 @@ const filteredArchived = computed(() => {
   const k = sessQ.value.trim()
   return archivedList.value.filter((s) => !k || s.title.includes(k))
 })
-const activeProvider = () => settings.value?.providers?.find((p) => p.name === settings.value?.activeChat)
-
-function pickProvider(name) {
-  api.putJson('/api/settings', { activeChat: name }).then((s) => { settings.value = s })
-}
-
 onMounted(async () => {
   const results = await Promise.allSettled([
     reloadSessions(),
@@ -294,14 +282,6 @@ async function reloadSessions() {
   sessions.value = await api.get('/api/sessions')
 }
 
-function groupOf(s) {
-  const d = new Date(s.updatedAt)
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  const yest = new Date(today); yest.setDate(yest.getDate() - 1)
-  if (d >= today) return '今天'
-  if (d >= yest) return '昨天'
-  return '更早'
-}
 
 function rememberSession(id) {
   if (id) localStorage.setItem('kb-last-session', id)
@@ -340,6 +320,7 @@ async function archiveSession(s, v) {
   sessionBusyId.value = s.id
   try {
     await api.post(`/api/sessions/${s.id}/archive?value=${v}`)
+    sessionCache.delete(s.id)
     await reloadSessions()
   } catch (e) {
     ElMessage.error('操作失败：' + (e.message || e))
@@ -358,6 +339,7 @@ function renameSession(s) {
     sessionBusyId.value = s.id
     try {
       await api.post(`/api/sessions/${s.id}/rename?title=${encodeURIComponent(t)}`)
+      sessionCache.delete(s.id)
       await reloadSessions()
     } catch (e) {
       ElMessage.error('重命名失败：' + (e.message || e))
@@ -365,13 +347,6 @@ function renameSession(s) {
       sessionBusyId.value = ''
     }
   }).catch(() => {})
-}
-
-function commitRename(s) {
-  const t = renameText.value.trim()
-  renaming.value = ''
-  if (!t || t === s.title) return
-  api.post(`/api/sessions/${s.id}/rename?title=${encodeURIComponent(t)}`).then(() => reloadSessions())
 }
 
 function removeSession(s) {
@@ -474,6 +449,15 @@ async function ask(qOverride, opts = {}) {
       currentAns = null
       genSid.value = ''
       if (askSid) sessionCache.delete(askSid)
+      // 预创建的会话一条消息都没落库时删掉，避免列表留空壳
+      if (askSid) {
+        api.get('/api/sessions/' + askSid).then((saved) => {
+          if (!saved.length) api.del('/api/sessions/' + askSid).then(() => {
+            if (currentId.value === askSid) { currentId.value = ''; messages.value = [] }
+            reloadSessions()
+          }).catch(() => {})
+        }).catch(() => {})
+      }
       scrollBottom()
     },
     abortCtl.signal,
@@ -1119,7 +1103,6 @@ function onBodyClick(e, m) {
 .rate .thumb.bad.on{color:var(--el-color-danger);background:var(--el-color-danger-light-9)}
 .srcrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed var(--line-soft)}
 .src{cursor:pointer;font-family:var(--sans);--el-tag-bg-color:var(--paper)}
-.thinking{display:flex;align-items:center;gap:6px;color:var(--ink3);font-size:var(--fs-xs);padding:4px 0}
 .thinking span{width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.4;animation:pulse 1.2s infinite}
 .thinking span:nth-child(2){animation-delay:.2s}
 .thinking span:nth-child(3){animation-delay:.4s}
@@ -1139,7 +1122,6 @@ function onBodyClick(e, m) {
 .chip.on{border-color:var(--accent);color:var(--accent);background:var(--el-color-primary-light-9)}
 .tagpick{display:flex;flex-direction:column;gap:0;max-height:160px;overflow:auto;flex:1}
 .tagpick .el-checkbox{height:26px;margin-right:0}
-.tagtip{font-size:var(--fs-2xs);color:var(--el-text-color-secondary);margin-top:6px}
 .chip.busy{opacity:.6;pointer-events:none}
 .chip .el-icon{font-size:13px}
 .bar .grow{flex:1}
@@ -1150,7 +1132,6 @@ function onBodyClick(e, m) {
 .sess .lab.gh .gedit{margin-left:auto;color:var(--ink3);cursor:pointer}
 .sess .lab.gh .gedit:hover{color:var(--accent)}
 .color-dot{width:20px;height:20px;border-radius:6px;cursor:pointer;border:2px solid transparent}
-.model-tag{font-size:var(--fs-xs);color:var(--ink2);background:var(--mist);border-color:var(--line)}
 .scope-hint{color:var(--accent);opacity:.85}
 /* 会话列表：正在生成的标记 */
 .gen-spin{font-size:12px;color:var(--accent);margin-right:4px;animation:gen-rot 1s linear infinite;vertical-align:-2px}

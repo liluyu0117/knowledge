@@ -257,6 +257,7 @@ function openTagEdit(n) {
 // ── 网页接入 ──
 const urlDialog = ref(false)
 const urlText = ref('')
+const ROOT_DIR = '__root__'   // el-select 把空串当未选择，用哨兵值表示根目录
 const urlFolder = ref(ROOT_DIR)
 const urlTags = ref([])
 const urlBusy = ref(false)
@@ -388,12 +389,9 @@ const upTags = ref([])
 const upBusy = ref(false)
 const fileInput = ref(null)
 const folderCreating = ref(false)   // 新建文件夹中
-const lastUploadFolder = ref('')    // 上次上传的目录（跨次记忆）
 const upProg = ref(null)            // 上传进度 {done,total,curName,percent}
 const dragOver = ref(false)         // 拖拽悬停高亮
 
-// el-select 把空串当成"未选择"，用哨兵值表示根目录
-const ROOT_DIR = '__root__'
 const folderOptions = computed(() => {
   const out = [{ label: '根目录（知识库最外层）', value: ROOT_DIR }]
   const walk = (nodes) => {
@@ -467,7 +465,6 @@ function xhrUpload(url, file, onProgress) {
   })
 }
 
-/** 新建文件夹：弹窗输入名称（可带子路径），建在当前知识库根目录下 */
 /** 在指定目录下新建文件夹（parentPath 为空 = 根目录）；创建后自动展开父目录 */
 function newFolderIn(parentPath) {
   if (!currentId.value || folderCreating.value) return
@@ -1155,8 +1152,6 @@ const failedList = computed(() => st.value?.last?.failed || [])
 .rowops .del{font-size:13px;color:var(--el-text-color-secondary);cursor:pointer}
 .rowops .del:hover{color:var(--el-color-danger)}
 .buildhint{display:flex;align-items:center;gap:8px;padding:0 0 8px}
-.upfiles{margin-top:8px;border:1px solid var(--el-border-color-light);border-radius:8px;max-height:180px;overflow:auto}
-.upfile{display:flex;gap:10px;align-items:center;padding:6px 10px;font-size:var(--fs-xs);border-bottom:1px dashed var(--el-border-color-lighter)}
 .upfile:last-child{border-bottom:0}
 .upfile .upn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--el-text-color-primary)}
 .upfile .ups{color:var(--el-text-color-secondary);font-variant-numeric:tabular-nums}

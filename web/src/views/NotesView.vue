@@ -205,7 +205,13 @@ function newNote() {
   const go = () => { creating.value = false; resetDraft() }
   if (dirty.value) {
     creating.value = true
-    persist(false).finally(go)
+    persist(false).then((ok) => {
+      creating.value = false
+      if (ok) { go(); return }
+      ElMessageBox.confirm('当前草稿自动保存失败，新建会覆盖未保存内容。仍要新建吗？', '保存失败', {
+        type: 'warning', confirmButtonText: '丢弃并新建', cancelButtonText: '取消',
+      }).then(go).catch(() => { creating.value = false })
+    })
   } else {
     go()
   }
@@ -310,8 +316,14 @@ async function load() {
 /** 切换笔记：先静默存住当前内容，再切（不弹确认） */
 function select(n) {
   if (n.id === currentId.value) return
-  if (dirty.value) persist(false).finally(() => doSelect(n))
-  else doSelect(n)
+  if (dirty.value) {
+    persist(false).then((ok) => {
+      if (ok) { doSelect(n); return }
+      ElMessageBox.confirm('当前草稿自动保存失败，直接切换会丢失未保存内容。仍要切换吗？', '保存失败', {
+        type: 'warning', confirmButtonText: '丢弃并切换', cancelButtonText: '留在本页',
+      }).then(() => doSelect(n)).catch(() => {})
+    })
+  } else doSelect(n)
 }
 
 function doSelect(n) {
