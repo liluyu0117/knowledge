@@ -8,6 +8,9 @@ import { mdToHtml } from '../utils/md'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
 const props = defineProps({ target: Object, kbId: { type: String, default: 'default' } })
+
+/** 生效知识库：来源自带的 kbId（跨库检索的命中）优先于宿主页面的当前库 */
+const effKbId = computed(() => props.target?.kbId || props.kbId)
 const emit = defineEmits(['close'])
 
 const tab = ref('preview')
@@ -63,7 +66,7 @@ watch(() => props.target, async (t) => {
   locateState.value = ''
   tab.value = 'preview'
   if (t.seq != null && t.seq >= 0) {
-    api.get('/api/doc/text?path=' + encodeURIComponent(t.docPath) + '&seq=' + t.seq + '&kbId=' + props.kbId)
+    api.get('/api/doc/text?path=' + encodeURIComponent(t.docPath) + '&seq=' + t.seq + '&kbId=' + effKbId.value)
       .then((d) => { locChunk.value = d.chunks?.[0] || null })
       .catch(() => { locChunk.value = null })
   }
@@ -71,7 +74,7 @@ watch(() => props.target, async (t) => {
   try {
     // 笔记库：直读笔记文件本体。笔记频繁修改且可能尚未建索引，
     // 走索引分块会报「块已不存在」，且拿到的还是旧内容
-    if (props.kbId === 'notes') {
+    if (effKbId.value === 'notes') {
       const r = await api.get('/api/notes/by-file?path=' + encodeURIComponent(t.docPath))
       if (r && r.content !== undefined) {
         info.value = { title: r.title, ext: '.' + (r.type || 'md'), path: t.docPath, kind: 'text' }
@@ -83,12 +86,12 @@ watch(() => props.target, async (t) => {
       }
       // 笔记文件不存在：落到下方索引逻辑，给出统一报错
     }
-    const head = await api.get('/api/doc/meta?path=' + encodeURIComponent(t.docPath) + '&kbId=' + props.kbId)
+    const head = await api.get('/api/doc/meta?path=' + encodeURIComponent(t.docPath) + '&kbId=' + effKbId.value)
     info.value = { ...head, path: t.docPath }
     loadBackrefs(t.docPath)
     if (mode.value === 'docx') {
       const m = await import('mammoth/mammoth.browser')
-      const buf = await fetch('/api/doc/raw?path=' + encodeURIComponent(t.docPath) + '&kbId=' + props.kbId).then((r) => {
+      const buf = await fetch('/api/doc/raw?path=' + encodeURIComponent(t.docPath) + '&kbId=' + effKbId.value).then((r) => {
         if (!r.ok) throw new Error('原文件获取失败 ' + r.status)
         return r.arrayBuffer()
       })
@@ -101,7 +104,7 @@ watch(() => props.target, async (t) => {
     } else if (mode.value === 'pdf') {
       const pdfjs = await import('pdfjs-dist')
       pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
-      const buf = await fetch('/api/doc/raw?path=' + encodeURIComponent(t.docPath) + '&kbId=' + props.kbId).then((r) => {
+      const buf = await fetch('/api/doc/raw?path=' + encodeURIComponent(t.docPath) + '&kbId=' + effKbId.value).then((r) => {
         if (!r.ok) throw new Error('原文件获取失败 ' + r.status)
         return r.arrayBuffer()
       })
@@ -109,7 +112,7 @@ watch(() => props.target, async (t) => {
       pdfDoc.value = await pdfjs.getDocument({ data: buf }).promise
     } else if (mode.value === 'xlsx') {
       const XLSX = await import('xlsx')
-      const buf = await fetch('/api/doc/raw?path=' + encodeURIComponent(t.docPath) + '&kbId=' + props.kbId).then((r) => {
+      const buf = await fetch('/api/doc/raw?path=' + encodeURIComponent(t.docPath) + '&kbId=' + effKbId.value).then((r) => {
         if (!r.ok) throw new Error('原文件获取失败 ' + r.status)
         return r.arrayBuffer()
       })
@@ -120,7 +123,7 @@ watch(() => props.target, async (t) => {
       }))
       activeSheet.value = 0
     } else {
-      const t2 = await api.get('/api/doc/text?path=' + encodeURIComponent(t.docPath) + (t.seq != null ? '&seq=' + t.seq : '') + '&kbId=' + props.kbId)
+      const t2 = await api.get('/api/doc/text?path=' + encodeURIComponent(t.docPath) + (t.seq != null ? '&seq=' + t.seq : '') + '&kbId=' + effKbId.value)
       textChunks.value = t2.chunks || []
       if (!textChunks.value.length && t.seq != null) {
         throw new Error('该块在索引里已不存在（引用可能来自旧版路径），请重新提问获取最新引用')
@@ -165,7 +168,7 @@ async function renderPdf() {
 const openingRaw = ref(false)
 async function openRaw() {
   if (openingRaw.value) return
-  const q = 'path=' + encodeURIComponent(props.target?.docPath || '') + '&kbId=' + props.kbId
+  const q = 'path=' + encodeURIComponent(props.target?.docPath || '') + '&kbId=' + effKbId.value
   openingRaw.value = true
   try {
     const r = await api.get('/api/doc/open?' + q)
@@ -276,7 +279,7 @@ watch(tab, (t2) => { if (t2 === 'hits') loadHits() })
 const hitChunks = ref([])
 async function loadHits() {
   const t = props.target
-  hitChunks.value = (await api.get('/api/doc/text?path=' + encodeURIComponent(t.docPath) + '&kbId=' + props.kbId)).chunks
+  hitChunks.value = (await api.get('/api/doc/text?path=' + encodeURIComponent(t.docPath) + '&kbId=' + effKbId.value)).chunks
   jumpToChunk()
 }
 </script>

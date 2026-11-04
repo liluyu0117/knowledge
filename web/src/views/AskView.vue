@@ -612,7 +612,8 @@ async function rate(m, val) {
 }
 
 function openSource(src) {
-  preview.value = { open: true, docPath: src.docPath, seq: src.seq }
+  // 优先用来源命中所在的知识库（跨库检索后笔记/文档可能不在当前智能体的库里）
+  preview.value = { open: true, docPath: src.docPath, seq: src.seq, kbId: src.kbId || agentKbId() }
 }
 
 /** 导出单条问答：回答卡片上的「导出 MD」，只含这一问一答，不带来源文件列表 */
