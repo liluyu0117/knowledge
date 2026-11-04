@@ -46,10 +46,14 @@ const noteGroups = computed(() => {
     if (!byFolder.has(f)) byFolder.set(f, [])
     byFolder.get(f).push(n)
   }
-  const groups = []
-  if (root.length) groups.push({ folder: '', name: '根目录', items: root })
-  for (const [f, items] of byFolder) groups.push({ folder: f, name: f, items })
-  return groups
+    // 物理存在但还没放笔记的文件夹（如刚新建的）也要显示
+    for (const f of noteFolders.value) {
+      if (f && !byFolder.has(f)) byFolder.set(f, [])
+    }
+    const groups = []
+    if (root.length || byFolder.size) groups.push({ folder: '', name: '根目录', items: root })
+    for (const f of [...byFolder.keys()].sort()) groups.push({ folder: f, name: f, items: byFolder.get(f) })
+    return groups
 })
 
 const NOTE_TYPES = [
@@ -310,6 +314,38 @@ function remove() {
   removeNote({ id: currentId.value, title: title.value || '未命名笔记' })
 }
 
+/** 拖拽笔记到文件夹分组完成移动 */
+function onDragStart(n, e) {
+  dragNoteId.value = n.id
+  e.dataTransfer.effectAllowed = 'move'
+  e.dataTransfer.setData('text/plain', n.title)
+}
+
+function onDropToGroup(folder) {
+  const id = dragNoteId.value
+  dropFolder.value = null
+  if (!id) return
+  const n = notes.value.find((x) => x.id === id)
+  if (!n || (n.folder || '') === folder) return
+  doMove(n, folder)
+}
+
+async function doMove(n, folder) {
+  movingId.value = n.id
+  try {
+    const r = await api.post(`/api/notes/${n.id}/move?folder=${encodeURIComponent(folder)}`)
+    if (!r.ok) { ElMessage.error(r.error || '移动失败'); return }
+    ElMessage.success(folder ? `已移动到「${folder}」` : '已移动到根目录')
+    if (currentId.value === n.id) draftFolder.value = folder
+    load()
+  } catch (e) {
+    ElMessage.error('移动失败：' + (e.message || e))
+  } finally {
+    movingId.value = ''
+    dragNoteId.value = ''
+  }
+}
+
 /** 移动笔记到文件夹：弹窗选择（可输入新文件夹名，空 = 根目录） */
 function moveDialog(n) {
   if (movingId.value) return
@@ -322,18 +358,7 @@ function moveDialog(n) {
     },
   ).then(async ({ value }) => {
     const target = (value || '').trim()
-    movingId.value = n.id
-    try {
-      const r = await api.post(`/api/notes/${n.id}/move?folder=${encodeURIComponent(target)}`)
-      if (!r.ok) { ElMessage.error(r.error || '移动失败'); return }
-      ElMessage.success(target ? `已移动到「${target}」` : '已移动到根目录')
-      if (currentId.value === n.id) draftFolder.value = target
-      load()
-    } catch (e) {
-      ElMessage.error('移动失败：' + (e.message || e))
-    } finally {
-      movingId.value = ''
-    }
+    await doMove(n, target)
   }).catch(() => {})
 }
 
@@ -462,12 +487,17 @@ const rendered = computed(() => (type.value === 'md'
         <div v-if="!notes.length && !isDraft" class="nempty">还没有笔记，点上方新建</div>
 
         <template v-for="g in noteGroups" :key="g.folder || '__root__'">
-          <div class="ngroup">
+          <div class="ngroup" :class="{ dropt: dropFolder === g.folder }"
+               @dragover.prevent="dropFolder = g.folder" @dragleave="dropFolder === g.folder && (dropFolder = null)"
+               @drop.prevent="onDropToGroup(g.folder)">
             <el-icon class="ng-ic"><FolderOpened /></el-icon>{{ g.name }}
             <span class="ng-n">{{ g.items.length }}</span>
           </div>
           <div v-for="n in g.items" :key="n.id" class="nitem"
-               :class="{ on: n.id === currentId }" :style="g.folder ? 'padding-left:14px' : ''" @click="select(n)">
+               :class="{ on: n.id === currentId }" :style="g.folder ? 'padding-left:14px' : ''"
+               draggable="true" @dragstart="onDragStart(n, $event)" @dragend="dragNoteId = ''"
+               @dragover.prevent="dropFolder = g.folder" @dragleave="dropFolder === g.folder && (dropFolder = null)"
+               @drop.prevent="onDropToGroup(g.folder)" @click="select(n)">
           <span class="nt" :title="n.title + '.' + extOf(n.type)" @dblclick.stop="renameDialog(n)">{{ n.title }}</span>
           <div class="d">{{ extOf(n.type) }} · {{ n.updatedAt.slice(5, 16).replace('T', ' ') }}</div>
           <span class="nops">
@@ -560,6 +590,8 @@ const rendered = computed(() => (type.value === 'md'
   color:var(--ink3);font-weight:600}
 .ngroup .ng-ic{font-size:12px}
 .ngroup .ng-n{margin-left:auto}
+.ngroup.dropt{background:var(--accent-soft);outline:1.5px dashed var(--accent);border-radius:8px}
+.nitem:active{cursor:grabbing}
 .nitem{position:relative;padding:9px 11px;border-radius:8px;cursor:pointer;font-size:var(--fs-sm);line-height:1.5}
 .nitem:hover{background:var(--el-fill-color-light)}
 .nitem.on{background:var(--el-color-primary-light-9)}
