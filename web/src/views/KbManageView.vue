@@ -584,7 +584,9 @@ async function onRowUp(e) {
   // 拖拽结束抑制随后的 click（避免误开文件）
   window.__kbSuppressClick = true
   setTimeout(() => { window.__kbSuppressClick = false }, 300)
-  if (target === (p0.n.folder || '')) return
+  // 当前所在目录 = 路径的父级（文件树节点没有 folder 字段，不能直接用）
+  const curFolder = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : ''
+  if (target === curFolder) return
   try {
     const r = await api.post(`/api/kb/${currentId.value}/move?from=${encodeURIComponent(file.path)}&to=${encodeURIComponent(target)}`)
     if (!r.ok) { ElMessage.error(r.error || '移动失败'); return }
