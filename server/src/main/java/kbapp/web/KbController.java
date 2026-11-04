@@ -463,6 +463,64 @@ public class KbController {
     }
 
     /**
+     * 移动文件到另一个目录（拖拽整理用）：物理移动 + 标签跟随 + 旧路径索引立即移除
+     * （新路径随下次增量构建进入索引）。to 为空 = 根目录。
+     */
+    @PostMapping("/{id}/move")
+    public Map<String, Object> moveFile(@PathVariable String id,
+                                        @RequestParam("from") String from,
+                                        @RequestParam(defaultValue = "") String to) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        KbRegistry.KbEntry kb = registry.byId(id);
+        if (kb == null) { m.put("ok", false); m.put("error", "知识库不存在"); return m; }
+        Path root = registry.docsRoot(kb);
+        String fromRel = from == null ? "" : from.replace('\\', '/');
+        Path src = root.resolve(fromRel).normalize();
+        if (fromRel.isBlank() || !src.startsWith(root) || !Files.isRegularFile(src)) {
+            m.put("ok", false); m.put("error", "文件不存在或路径不合法"); return m;
+        }
+        String folder = to == null ? "" : to.replace('\\', '/').trim();
+        if (!folder.isBlank()) {
+            for (String part : folder.split("/")) {
+                if (part.isBlank() || part.equals(".") || part.equals("..")) {
+                    m.put("ok", false); m.put("error", "目标目录不合法"); return m;
+                }
+            }
+        }
+        Path dir = folder.isBlank() ? root : root.resolve(folder).normalize();
+        if (!dir.startsWith(root)) { m.put("ok", false); m.put("error", "目标目录不合法"); return m; }
+        Path target = dir.resolve(src.getFileName()).normalize();
+        if (!target.startsWith(root)) { m.put("ok", false); m.put("error", "目标路径不合法"); return m; }
+        if (target.equals(src)) { m.put("ok", true); m.put("path", fromRel); m.put("unchanged", true); return m; }
+        if (Files.exists(target)) { m.put("ok", false); m.put("error", "目标目录已有同名文件"); return m; }
+        String newRel = root.relativize(target).toString().replace('\\', '/');
+        try {
+            Files.createDirectories(dir);
+            Files.move(src, target);
+            // 标签跟着文件走
+            List<String> tags = new ArrayList<>(docMeta.tagsOf(kb.id(), fromRel));
+            docMeta.removeDoc(kb.id(), fromRel);
+            if (tags != null && !tags.isEmpty()) docMeta.setTagsBulk(kb.id(), Map.of(newRel, tags), "move");
+            // 旧路径立即从索引移除（新路径等增量构建收录）
+            builder.removeDocs(id, List.of(fromRel));
+            // 源目录空了就清掉
+            Path parent = src.getParent();
+            if (parent != null && !parent.equals(root)) {
+                try (var st = Files.list(parent)) {
+                    if (st.findAny().isEmpty()) Files.delete(parent);
+                } catch (IOException ignored) { }
+            }
+            m.put("ok", true);
+            m.put("path", newRel);
+            m.put("folder", folder);
+        } catch (IOException e) {
+            m.put("ok", false);
+            m.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+        return m;
+    }
+
+    /**
      * 删除知识库内的文件夹（连同其中全部文件）。
      * 目录非空且未带 confirm=true 时返回 needConfirm，由前端做二次确认。
      */

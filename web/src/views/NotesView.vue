@@ -412,6 +412,55 @@ async function doMove(n, folder) {
   }
 }
 
+/** 重命名文件夹 */
+function renameFolderDialog(g) {
+  ElMessageBox.prompt(`重命名文件夹「${g.name}」`, '重命名文件夹', {
+    inputValue: g.name,
+    inputPlaceholder: '新名称',
+    confirmButtonText: '保存', cancelButtonText: '取消',
+  }).then(async ({ value }) => {
+    const name = (value || '').trim()
+    if (!name || name === g.name) return
+    try {
+      const r = await api.post(`/api/notes/folders/rename?from=${encodeURIComponent(g.folder)}&to=${encodeURIComponent(name)}`)
+      if (!r.ok) { ElMessage.error(r.error || '重命名失败'); return }
+      // 折叠状态跟到新名字
+      if (collapsed.value[g.folder]) {
+        const next = { ...collapsed.value }
+        delete next[g.folder]
+        next[name] = true
+        collapsed.value = next
+        localStorage.setItem('kb-note-collapsed', JSON.stringify(next))
+      }
+      ElMessage.success('文件夹已重命名')
+      load()
+    } catch (e) {
+      ElMessage.error('重命名失败：' + (e.message || e))
+    }
+  }).catch(() => {})
+}
+
+/** 删除文件夹：内含笔记移到根目录（内容不丢） */
+async function deleteFolder(g) {
+  const n = (g.items || []).length
+  const msg = n > 0
+    ? `文件夹「${g.name}」中有 ${n} 篇笔记。\n\n删除后这些笔记会移到根目录，内容不会丢失。确定删除文件夹？`
+    : `删除空文件夹「${g.name}」？`
+  try {
+    await ElMessageBox.confirm(msg, '删除文件夹', {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+    })
+  } catch { return }
+  try {
+    const r = await api.del(`/api/notes/folders?name=${encodeURIComponent(g.folder)}`)
+    if (!r.ok) { ElMessage.error(r.error || '删除失败'); return }
+    ElMessage.success(n > 0 ? `文件夹已删除，${n} 篇笔记已移到根目录` : '文件夹已删除')
+    load()
+  } catch (e) {
+    ElMessage.error('删除失败：' + (e.message || e))
+  }
+}
+
 /** 新建文件夹（物理目录，供后续归类） */
 function addFolder() {
   ElMessageBox.prompt('输入文件夹名（可多级，如「上线方案/2026-11」）', '新建文件夹', {
@@ -542,6 +591,14 @@ const rendered = computed(() => (type.value === 'md'
             <span class="ng-arrow" :class="{ off: collapsed[g.folder || '__root__'] }">▾</span>
             <el-icon class="ng-ic"><FolderOpened /></el-icon>{{ g.name }}
             <span class="ng-n">{{ g.items.length }}</span>
+            <span v-if="g.folder" class="ng-ops">
+              <el-tooltip content="重命名文件夹" placement="top">
+                <el-icon @click.stop="renameFolderDialog(g)"><EditPen /></el-icon>
+              </el-tooltip>
+              <el-tooltip content="删除文件夹（内含笔记移到根目录）" placement="top">
+                <el-icon class="del" @click.stop="deleteFolder(g)"><Delete /></el-icon>
+              </el-tooltip>
+            </span>
           </div>
           <template v-if="!collapsed[g.folder || '__root__']">
           <div v-for="n in g.items" :key="n.id" class="nitem"
@@ -645,6 +702,12 @@ const rendered = computed(() => (type.value === 'md'
 .ng-arrow.off{transform:rotate(-90deg)}
 .ngroup .ng-ic{font-size:12px}
 .ngroup .ng-n{margin-left:auto}
+.ng-ops{display:flex;gap:3px;opacity:0;margin-left:4px;transition:opacity var(--t-fast) var(--ease)}
+.ngroup:hover .ng-ops{opacity:1}
+.ng-ops .el-icon{font-size:12px;cursor:pointer}
+.ng-ops .el-icon:hover{color:var(--accent)}
+.ng-ops .el-icon.del:hover{color:var(--el-color-danger)}
+.ngroup:hover .ng-n{display:none}
 .drag-ghost{position:fixed;z-index:4000;pointer-events:none;background:var(--card);
   border:1px solid var(--accent);border-radius:8px;padding:5px 10px;font-size:var(--fs-xs);
   box-shadow:0 6px 18px rgba(20,24,38,.18);color:var(--ink);max-width:260px;

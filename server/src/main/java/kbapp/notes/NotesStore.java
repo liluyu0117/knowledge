@@ -309,6 +309,84 @@ public class NotesStore {
     }
 
     /**
+     * 重命名文件夹（含子路径前缀一起改）：移动物理目录 + 更新相关笔记的 folder。
+     * 目标已存在时拒绝，避免合并出意外。
+     */
+    public synchronized void renameFolder(String from, String toName) {
+        String a = sanitizeFolder(from);
+        String b = sanitizeFolder(toName);
+        if (a.isEmpty() || b.isEmpty()) throw new IllegalArgumentException("文件夹名不合法");
+        if (a.equals(b)) return;
+        Path src = notesDir().resolve(a);
+        Path dst = notesDir().resolve(b);
+        if (!Files.isDirectory(src)) throw new IllegalArgumentException("文件夹不存在");
+        if (Files.exists(dst)) throw new IllegalArgumentException("已存在同名文件夹「" + b + "」");
+        try {
+            Files.createDirectories(dst.getParent());
+            Files.move(src, dst);
+        } catch (IOException e) {
+            throw new IllegalStateException("重命名失败: " + e.getMessage(), e);
+        }
+        List<Note> updated = new ArrayList<>();
+        for (Note n : notes) {
+            String f = n.folderOrRoot();
+            if (f.equals(a)) {
+                updated.add(new Note(n.id(), n.title(), n.type(), n.createdAt(), n.updatedAt(), n.kbId(), b));
+            } else if (f.startsWith(a + "/")) {
+                updated.add(new Note(n.id(), n.title(), n.type(), n.createdAt(), n.updatedAt(), n.kbId(),
+                        b + f.substring(a.length())));
+            } else {
+                updated.add(n);
+            }
+        }
+        notes = updated;
+        save();
+        scheduleRebuild();
+    }
+
+    /**
+     * 删除文件夹：其中的笔记（含子目录）一律移到根目录，不删内容；
+     * 物理目录整棵删除。返回被移动的笔记数。
+     */
+    public synchronized int deleteFolder(String folder) {
+        String f = sanitizeFolder(folder);
+        if (f.isEmpty()) throw new IllegalArgumentException("根目录不可删除");
+        Path dir = notesDir().resolve(f);
+        int moved = 0;
+        List<Note> updated = new ArrayList<>();
+        for (Note n : notes) {
+            String nf = n.folderOrRoot();
+            if (nf.equals(f) || nf.startsWith(f + "/")) {
+                Note toRoot = new Note(n.id(), n.title(), n.type(), n.createdAt(),
+                        java.time.LocalDateTime.now().withNano(0).toString(), n.kbId(), "");
+                Path from = fileOf(n);
+                try {
+                    Files.createDirectories(notesDir());
+                    Path target = noteFile(toRoot);
+                    if (Files.exists(from)) Files.move(from, target);
+                } catch (IOException e) {
+                    throw new IllegalStateException("移动笔记到根目录失败: " + e.getMessage(), e);
+                }
+                updated.add(toRoot);
+                moved++;
+            } else {
+                updated.add(n);
+            }
+        }
+        notes = updated;
+        if (Files.isDirectory(dir)) {
+            try {
+                deleteTree(dir);
+            } catch (IOException e) {
+                throw new IllegalStateException("删除文件夹失败: " + e.getMessage(), e);
+            }
+        }
+        save();
+        scheduleRebuild();
+        return moved;
+    }
+
+    /**
      * 只改文件名（标题），不动正文与类型。文件名唯一，重名直接报错让用户改。
      * 标题变了要同步移动物理文件（索引在下次构建时自动跟随）。
      */

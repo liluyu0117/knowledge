@@ -86,6 +86,38 @@ public class NotesController {
         return store.folders();
     }
 
+    /** 重命名文件夹（同时更新其中笔记的归属）。 */
+    @PostMapping("/folders/rename")
+    public Map<String, Object> renameFolder(@RequestParam("from") String from,
+                                            @RequestParam("to") String to) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        try {
+            store.renameFolder(from, to);
+            m.put("ok", true);
+            m.put("folders", store.folders());
+        } catch (Exception e) {
+            m.put("ok", false);
+            m.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+        return m;
+    }
+
+    /** 删除文件夹：其中的笔记自动移到根目录，内容不丢。 */
+    @DeleteMapping("/folders")
+    public Map<String, Object> deleteFolder(@RequestParam("name") String name) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        try {
+            int moved = store.deleteFolder(name);
+            m.put("ok", true);
+            m.put("moved", moved);
+            m.put("folders", store.folders());
+        } catch (Exception e) {
+            m.put("ok", false);
+            m.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+        return m;
+    }
+
     /** 新建文件夹（可多级，已存在视为成功）。 */
     @PostMapping("/folders")
     public Map<String, Object> newFolder(@RequestParam("name") String name) {

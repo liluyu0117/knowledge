@@ -530,6 +530,72 @@ async function removeFolder(n) {
 }
 
 
+// ── 文件拖拽移动（pointer 事件 + 6px 阈值，不影响单击打开）──
+const dragFile = ref(null)     // { path, name, x, y }
+const dropTarget = ref(null)   // 悬停的目录（'' 表示根目录）
+let press = null               // 按下信息
+
+function onRowDown(n, e) {
+  if (e.button !== 0 || !currentId.value) return
+  press = { n, x: e.clientX, y: e.clientY, started: false }
+  document.addEventListener('pointermove', onRowMove, true)
+  document.addEventListener('pointerup', onRowUp, true)
+}
+
+function onRowMove(e) {
+  if (!press) return
+  if (!press.started) {
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) return
+    press.started = true
+    dragFile.value = { path: press.n.path, name: press.n.name, x: e.clientX, y: e.clientY }
+  }
+  dragFile.value.x = e.clientX
+  dragFile.value.y = e.clientY
+  dropTarget.value = folderAt(e.clientX, e.clientY)
+}
+
+/** 落点解析：事件目标上溯 [data-folder]，再用坐标就近吸附 */
+function folderAt(x, y) {
+  const el = document.elementFromPoint(x, y)
+  const hit = el && el.closest ? el.closest('[data-folder]') : null
+  if (hit) return hit.getAttribute('data-folder') || ''
+  let best = null, bestD = Infinity
+  for (const w of document.querySelectorAll('.tnode[data-folder]')) {
+    const r = w.getBoundingClientRect()
+    const dx = Math.max(r.left - x, 0, x - r.right)
+    const dy = Math.max(r.top - y, 0, y - r.bottom)
+    const d = Math.hypot(dx, dy)
+    if (d < bestD) { bestD = d; best = w }
+  }
+  return best && bestD <= 40 ? (best.getAttribute('data-folder') || '') : null
+}
+
+async function onRowUp(e) {
+  document.removeEventListener('pointermove', onRowMove, true)
+  document.removeEventListener('pointerup', onRowUp, true)
+  const p0 = press
+  const started = p0 && p0.started
+  const file = dragFile.value
+  const target = started ? folderAt(e.clientX, e.clientY) : null
+  press = null
+  dragFile.value = null
+  dropTarget.value = null
+  if (!started || !file || target === null) return
+  // 拖拽结束抑制随后的 click（避免误开文件）
+  window.__kbSuppressClick = true
+  setTimeout(() => { window.__kbSuppressClick = false }, 300)
+  if (target === (p0.n.folder || '')) return
+  try {
+    const r = await api.post(`/api/kb/${currentId.value}/move?from=${encodeURIComponent(file.path)}&to=${encodeURIComponent(target)}`)
+    if (!r.ok) { ElMessage.error(r.error || '移动失败'); return }
+    ElMessage({ message: target ? `已移动到「${target}」` : '已移动到根目录', type: 'success', duration: 1200 })
+    if (target) expanded.value[target] = true
+    loadTree(currentId.value, true)
+  } catch (err) {
+    ElMessage.error('移动失败：' + (err.message || err))
+  }
+}
+
 async function doUpload() {
   if (!upFiles.value.length || upBusy.value) return
   upBusy.value = true
@@ -669,6 +735,7 @@ function guides(depth) {
 }
 
 function openFile(n) {
+  if (window.__kbSuppressClick) return
   if (n.type !== 'file') return
   preview.value = { open: true, docPath: n.path, seq: null }
 }
@@ -831,7 +898,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
         <el-tab-pane label="文件树" name="tree">
           <div v-loading="treeLoading" class="treebox">
-            <div class="tnode rootrow" title="知识库根目录">
+            <div class="tnode rootrow" :class="{ 'drop-in': dropTarget === '' }" data-folder="" title="知识库根目录">
               <span class="caret">▾</span>
               <el-icon class="tic"><Folder /></el-icon>
               <span class="nm">根目录</span>
@@ -847,7 +914,9 @@ const failedList = computed(() => st.value?.last?.failed || [])
             </div>
             <div class="tree">
               <div v-for="n in flatTree" :key="n.type + n.path" class="tnode"
-                   :class="{ folder: n.type === 'folder', more: n.type === 'more' }"
+                   :class="{ folder: n.type === 'folder', more: n.type === 'more', 'drop-in': n.type === 'folder' && dropTarget === n.path }"
+                   :data-folder="n.type === 'folder' ? n.path : null"
+                   @pointerdown="n.type === 'file' ? onRowDown(n, $event) : null"
                    :style="{ paddingLeft: 16 + n.depth * 20 + 'px', backgroundImage: guides(n.depth) }"
                    @click="n.type === 'folder' ? toggleNode(n) : n.type === 'more' ? showMore(n) : openFile(n)">
                 <span class="caret" v-if="n.type !== 'more'">{{ n.type === 'folder' ? (expanded[n.path] ? '▾' : '▸') : '' }}</span>
@@ -1070,6 +1139,12 @@ const failedList = computed(() => st.value?.last?.failed || [])
       </template>
     </el-dialog>
 
+    <!-- 拖拽跟随浮层 -->
+    <div v-if="dragFile" class="drag-ghost" :style="{ left: dragFile.x + 14 + 'px', top: dragFile.y + 8 + 'px' }">
+      <span class="dg-ic">📄</span>{{ dragFile.name }}
+      <span v-if="dropTarget !== null" class="dg-to">→ {{ dropTarget || '根目录' }}</span>
+    </div>
+
     <PreviewDrawer :target="preview" :kb-id="currentId || 'default'" @close="preview.open = false" />
   </el-container>
 </template>
@@ -1151,6 +1226,13 @@ const failedList = computed(() => st.value?.last?.failed || [])
 .fsnode{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;font-size:13px}
 .fsnode:hover{background:var(--el-fill-color-light)}
 :deep(.clickable){cursor:pointer}
+.drag-ghost{position:fixed;z-index:4000;pointer-events:none;background:var(--card);
+  border:1px solid var(--accent);border-radius:8px;padding:5px 10px;font-size:var(--fs-xs);
+  box-shadow:0 6px 18px rgba(20,24,38,.18);color:var(--ink);max-width:280px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drag-ghost .dg-ic{margin-right:5px}
+.drag-ghost .dg-to{color:var(--accent);margin-left:6px;font-weight:600}
+.tnode.drop-in{background:var(--accent-soft);outline:1.5px dashed var(--accent);outline-offset:-2px;border-radius:6px}
 .rowops{width:48px;flex:0 0 48px;display:flex;justify-content:center;gap:6px;opacity:0;transition:opacity var(--t-fast) var(--ease)}
 .tnode:hover .rowops{opacity:1}
 .rowops .del{font-size:13px;color:var(--el-text-color-secondary);cursor:pointer}
