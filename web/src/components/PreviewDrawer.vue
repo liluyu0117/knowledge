@@ -69,6 +69,20 @@ watch(() => props.target, async (t) => {
   }
   loading.value = true
   try {
+    // 笔记库：直读笔记文件本体。笔记频繁修改且可能尚未建索引，
+    // 走索引分块会报「块已不存在」，且拿到的还是旧内容
+    if (props.kbId === 'notes') {
+      const r = await api.get('/api/notes/by-file?path=' + encodeURIComponent(t.docPath))
+      if (r && r.content !== undefined) {
+        info.value = { title: r.title, ext: '.' + (r.type || 'md'), path: t.docPath, kind: 'text' }
+        textChunks.value = [{ seq: 0, heading: '', text: r.content, snippetHtml: '' }]
+        tab.value = 'preview'
+        highlightSeq.value = null
+        loadBackrefs(t.docPath)
+        return
+      }
+      // 笔记文件不存在：落到下方索引逻辑，给出统一报错
+    }
     const head = await api.get('/api/doc/meta?path=' + encodeURIComponent(t.docPath) + '&kbId=' + props.kbId)
     info.value = { ...head, path: t.docPath }
     loadBackrefs(t.docPath)

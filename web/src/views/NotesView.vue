@@ -31,6 +31,13 @@ const creating = ref(false)    // 新建笔记前先落盘当前草稿
 const removingId = ref('')     // 正在删除的笔记 id
 const renamingId = ref('')     // 正在重命名的笔记 id
 const refKbId = ref('default') // @doc 引用跳转时定位到的知识库
+const newDlg = ref(false)      // 新建笔记的格式选择弹窗
+const newType = ref('md')
+const NOTE_TYPES = [
+  { t: 'md', icon: '📝', name: 'Markdown', desc: '支持标题/列表，预览友好' },
+  { t: 'txt', icon: '📄', name: '纯文本', desc: '随手记，无格式' },
+  { t: 'doc', icon: '📃', name: 'Word 文档', desc: '生成 .docx，可导出给他人' },
+]
 
 const nowHM = () => new Date().toTimeString().slice(0, 8)
 
@@ -220,7 +227,7 @@ function onVisible() {
 // ── 新建：进空白编辑页，标题处就是填文件名的地方 ──
 function newNote() {
   if (creating.value) return
-  const go = () => { creating.value = false; resetDraft() }
+  const go = () => { creating.value = false; newDlg.value = true }  // 先选格式再进编辑
   if (dirty.value) {
     creating.value = true
     persist(false).then((ok) => {
@@ -235,10 +242,17 @@ function newNote() {
   }
 }
 
-function resetDraft() {
+/** 格式选定了 → 进入空白编辑 */
+function startDraft(t) {
+  newDlg.value = false
+  resetDraft(t)
+  focusTitle()
+}
+
+function resetDraft(t = 'md') {
   currentId.value = ''
   title.value = ''
-  type.value = 'md'
+  type.value = t
   content.value = ''
   dirty.value = false
   saveState.value = 'idle'
@@ -434,6 +448,21 @@ const rendered = computed(() => (type.value === 'md'
       </div>
     </el-main>
     <PreviewDrawer :target="preview" :kb-id="refKbId" @close="preview.open = false" />
+
+    <!-- 新建笔记：先选定格式 -->
+    <el-dialog v-model="newDlg" title="新建笔记" width="420px" :close-on-click-modal="false">
+      <div class="fmt-grid">
+        <div v-for="f in NOTE_TYPES" :key="t" class="fmt" :class="{ sel: newType === f.t }" @click="newType = f.t">
+          <div class="fmt-ic">{{ f.icon }}</div>
+          <div class="fmt-n">{{ f.name }}</div>
+          <div class="fmt-d">{{ f.desc }}</div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="newDlg = false">取消</el-button>
+        <el-button type="primary" @click="startDraft(newType)">开始编辑</el-button>
+      </template>
+    </el-dialog>
 </el-container>
 </template>
 
@@ -461,6 +490,14 @@ const rendered = computed(() => (type.value === 'md'
   border-radius:8px;overflow:hidden}
 .nedit :deep(.el-textarea__inner){height:100%;box-shadow:none;border:0;background:transparent;
   font-size:var(--fs-base);line-height:var(--lh-loose);padding:16px 20px;resize:none}
+.fmt-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.fmt{border:1.5px solid var(--el-border-color);border-radius:10px;padding:14px 8px;text-align:center;
+  cursor:pointer;transition:all var(--t-fast) var(--ease)}
+.fmt:hover{border-color:var(--accent)}
+.fmt.sel{border-color:var(--accent);background:var(--el-color-primary-light-9)}
+.fmt-ic{font-size:22px;margin-bottom:4px}
+.fmt-n{font-weight:600;font-size:var(--fs-sm)}
+.fmt-d{font-size:var(--fs-2xs);color:var(--ink3);margin-top:2px}
 .npv .docref:hover{text-decoration:underline}
 .npv{flex:1;min-width:0;background:#fff;border:1px solid var(--el-border-color-light);border-radius:8px;padding:16px 20px;overflow:auto;
   font-size:var(--fs-base);line-height:var(--lh-loose)}

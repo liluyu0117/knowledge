@@ -65,6 +65,31 @@ public class NotesController {
         return view(n);
     }
 
+    /**
+     * 按文件名直读笔记内容（预览抽屉用）：笔记频繁修改，索引总是滞后，
+     * 预览不能走索引分块，必须读文件本体。path 形如「标题.md」。
+     */
+    @GetMapping("/by-file")
+    public Map<String, Object> byFile(@RequestParam("path") String path) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        String fn = path == null ? "" : path.replace('\\', '/');
+        int slash = fn.lastIndexOf('/');
+        if (slash >= 0) fn = fn.substring(slash + 1);
+        int dot = fn.lastIndexOf('.');
+        String title = dot > 0 ? fn.substring(0, dot) : fn;
+        String ext = dot > 0 ? fn.substring(dot + 1) : "";
+        String type = "doc".equals(ext) ? "docx" : ext;
+        NotesStore.Note hit = store.list().stream()
+                .filter((n) -> n.title().equals(title) && n.type().equals(type))
+                .findFirst().orElse(null);
+        if (hit == null) { m.put("error", "笔记不存在"); return m; }
+        m.put("id", hit.id());
+        m.put("title", hit.title());
+        m.put("type", hit.type());
+        m.put("content", store.content(hit.id()));
+        return m;
+    }
+
     @GetMapping("/{id}")
     public Map<String, Object> get(@PathVariable String id) {
         NotesStore.Note n = store.byId(id);
