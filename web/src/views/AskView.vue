@@ -6,7 +6,7 @@ import { preview } from '../store/preview'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft, Lock, Setting, Select, CloseBold, ArrowUp, Loading } from '@element-plus/icons-vue'
+import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft, Lock, Setting, Select, CloseBold, ArrowUp, Loading, Download } from '@element-plus/icons-vue'
 
 const sessions = ref([])
 const currentId = ref('')
@@ -631,13 +631,35 @@ function openSource(src) {
   preview.value = { open: true, docPath: src.docPath, seq: src.seq }
 }
 
-function exportMd() {
-  const lastAns = [...messages.value].reverse().find((m) => m.role === 'assistant')
-  if (!lastAns) return
+/** 导出单条问答：回答卡片上的「导出 MD」，只含这一问一答，不带来源文件列表 */
+function exportOne(m) {
+  // 找到这条回答前面最近的提问
+  const i = messages.value.indexOf(m)
+  const q = [...messages.value.slice(0, i)].reverse().find((x) => x.role === 'user')
   let md = ''
-  for (const m of messages.value) {
+  if (q) md += '## 问\n\n' + q.content + '\n\n'
+  md += '## 答\n\n' + (m.content || '') + '\n'
+  const title = (q?.content || '问答').replace(/\s+/g, ' ').slice(0, 16)
+  downloadText(`问答-${title}.md`, md)
+  ElMessage.success('已导出该条问答（不含来源文件）')
+}
+
+/** 导出整个会话：全部问答 + 来源文件清单（侧栏会话操作里的「导出会话」） */
+async function exportSession(s) {
+  const sid = s?.id || currentId.value
+  if (!sid) { ElMessage.warning('当前会话还没有内容'); return }
+  const cur = sessions.value.find((x) => x.id === sid)
+  // 当前打开的会话用实时视图（可能含生成中的内容）；其他会话从后端拉取
+  let msgs = sid === currentId.value ? (sessionCache.get(sid) || messages.value) : null
+  if (!msgs || !msgs.length) {
+    try { msgs = await api.get('/api/sessions/' + sid) }
+    catch (e) { ElMessage.error('读取会话失败：' + (e.message || e)); return }
+  }
+  if (!msgs.length) { ElMessage.warning('该会话还没有内容'); return }
+  let md = `# ${cur?.title || '知识库会话'}\n\n> 导出时间：${new Date().toLocaleString('zh-CN')}\n\n`
+  for (const m of msgs) {
     if (m.role === 'user') md += '## 问\n\n' + m.content + '\n\n'
-    else md += '## 答\n\n' + m.content + '\n\n'
+    else md += '## 答\n\n' + (m.content || '') + '\n\n'
     if (m.sources?.length) {
       md += '### 来源\n\n'
       // file:// 链接在浏览器/编辑器里点不开，改成「标题（路径 · 块 n）」纯文本
@@ -645,7 +667,9 @@ function exportMd() {
       md += '\n'
     }
   }
-  downloadText('知识库问答.md', md)
+  const name = (cur?.title || '知识库会话').replace(/[\\/:*?"<>|]/g, '_').slice(0, 30)
+  downloadText(`会话-${name}.md`, md)
+  ElMessage.success('已导出整个会话')
 }
 
 /** markdown 渲染缓存：流式时同一版本只解析一次，避免每次重渲染全量解析 */
@@ -723,6 +747,7 @@ function onBodyClick(e, m) {
                 {{ s.title }}
               </span>
               <span class="ops" :class="{ busy: sessionBusyId === s.id }">
+                <el-icon @click.stop="exportSession(s)" title="导出会话 MD"><Download /></el-icon>
                 <el-icon @click.stop="renameSession(s)" title="重命名"><EditPen /></el-icon>
                 <el-icon @click.stop="archiveSession(s, true)" title="归档"><Collection /></el-icon>
               </span>
@@ -807,7 +832,7 @@ function onBodyClick(e, m) {
                 <!-- 低频操作：悬停卡片才出现，减少长会话噪音 -->
                 <span class="act-more">
                   <el-button link size="small" @click="regen()">重新生成</el-button>
-                  <el-button v-if="m.sources" link size="small" @click="exportMd">导出 MD</el-button>
+                  <el-button link size="small" @click="exportOne(m)">导出 MD</el-button>
                 </span>
               </div>
             </template>
