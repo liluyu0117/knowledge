@@ -1,10 +1,15 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { api } from '../api'
+import { useAsideWidth } from '../composables/useAsideWidth'
 import { preview } from '../store/preview'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Folder, FolderAdd, Document, Loading, Delete, Upload, PriceTag, Link } from '@element-plus/icons-vue'
+
+// 左侧栏宽度可拖拽（宽度持久化到 localStorage，双击把手复位）
+const { width: asideW, dragging: asideDrag, onDown: onAsideDown, reset: resetAside } =
+  useAsideWidth('kb', 250, 190, 480)
 
 const kbs = ref([])
 const currentId = ref('')
@@ -769,7 +774,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
 
 <template>
   <el-container class="kbpage">
-    <el-aside width="250px" class="kbside">
+    <el-aside :width="asideW + 'px'" class="kbside">
       <el-button type="primary" style="width:100%" @click="kbDialog = true">＋ 新建知识库</el-button>
       <div class="kbside-list">
         <div v-for="k in kbs" :key="k.id" class="kitem" :class="{ on: k.id === currentId }" @click="selectKb(k)">
@@ -783,6 +788,9 @@ const failedList = computed(() => st.value?.last?.failed || [])
         <el-empty v-if="!kbs.length" description="还没有知识库" :image-size="60" />
       </div>
     </el-aside>
+    <!-- 侧栏宽度拖拽把手：拖动改变宽度，双击复位 -->
+    <div class="aside-rs" :class="{ on: asideDrag }" :style="{ left: asideW + 'px' }"
+         title="拖动调整宽度，双击恢复默认" @pointerdown="onAsideDown" @dblclick="resetAside" />
 
     <el-main class="kbmain">
       <div class="kbhead">
@@ -1155,7 +1163,7 @@ const failedList = computed(() => st.value?.last?.failed || [])
 </template>
 
 <style scoped>
-.kbpage{height:100%;background:var(--el-bg-color-page)}
+.kbpage{height:100%;background:var(--el-bg-color-page);position:relative}
 .kbside{background:#FBFBFC;border-right:1px solid var(--el-border-color-light);padding:12px 8px;overflow:auto}
 .kbside-list{margin-top:8px}
 .kitem{padding:9px 10px;border-radius:8px;cursor:pointer;margin-bottom:2px;border:1px solid transparent}

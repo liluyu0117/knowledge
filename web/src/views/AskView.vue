@@ -2,11 +2,16 @@
 defineOptions({ name: 'AskView' }) // keep-alive include 依赖此名字
 import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount, onActivated } from 'vue'
 import { api, askSse, downloadText } from '../api'
+import { useAsideWidth } from '../composables/useAsideWidth'
 import { preview } from '../store/preview'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Plus, Search, EditPen, Collection, Delete, RefreshLeft, Lock, Setting, Select, CloseBold, Loading, Download } from '@element-plus/icons-vue'
+
+// 左侧栏宽度可拖拽（宽度持久化到 localStorage，双击把手复位）
+const { width: asideW, dragging: asideDrag, onDown: onAsideDown, reset: resetAside } =
+  useAsideWidth('ask', 248, 190, 460)
 
 const sessions = ref([])
 const currentId = ref('')
@@ -709,7 +714,7 @@ function onBodyClick(e, m) {
 
 <template>
   <el-container class="qa">
-    <el-aside width="248px" class="sess">
+    <el-aside :width="asideW + 'px'" class="sess">
       <el-button class="new" @click="newSession">
         <el-icon style="margin-right:5px"><Plus /></el-icon>新会话
       </el-button>
@@ -760,6 +765,9 @@ function onBodyClick(e, m) {
         </template>
       </el-scrollbar>
     </el-aside>
+    <!-- 侧栏宽度拖拽把手：拖动改变宽度，双击复位 -->
+    <div class="aside-rs" :class="{ on: asideDrag }" :style="{ left: asideW + 'px' }"
+         title="拖动调整宽度，双击恢复默认" @pointerdown="onAsideDown" @dblclick="resetAside" />
 
     <el-main class="qa-main">
       <div class="qa-top">
@@ -992,7 +1000,7 @@ function onBodyClick(e, m) {
 </template>
 
 <style scoped>
-.qa{height:100%}
+.qa{height:100%;position:relative}
 .sess{border-right:1px solid var(--el-border-color-light);background:#FBFBFC;padding:12px 8px;display:flex;flex-direction:column}
 .sess .new{width:100%}
 .sess .sessq{margin-bottom:6px}

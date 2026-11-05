@@ -6,5 +6,6 @@ import App from './App.vue'
 import router from './router'
 import './styles/tokens.css'
 import './styles/el-theme.css'
+import './styles/resizer.css'
 
 createApp(App).use(router).use(ElementPlus, { locale: zhCn }).mount('#app')

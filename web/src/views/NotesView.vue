@@ -2,11 +2,16 @@
 defineOptions({ name: 'NotesView' }) // keep-alive include 依赖此名字
 import { ref, computed, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
 import { api } from '../api'
+import { useAsideWidth } from '../composables/useAsideWidth'
 import { mdToHtml } from '../utils/md'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { EditPen, Delete, FolderOpened, FolderAdd } from '@element-plus/icons-vue'
 import PreviewDrawer from '../components/PreviewDrawer.vue'
 import { preview } from '../store/preview'
+
+// 左侧栏宽度可拖拽（宽度持久化到 localStorage，双击把手复位）
+const { width: asideW, dragging: asideDrag, onDown: onAsideDown, reset: resetAside } =
+  useAsideWidth('notes', 250, 200, 520)
 
 const notes = ref([])
 const currentId = ref('')
@@ -585,7 +590,7 @@ const rendered = computed(() => (type.value === 'md'
 
 <template>
   <el-container class="np">
-    <el-aside width="250px" class="nside">
+    <el-aside :width="asideW + 'px'" class="nside">
       <div style="display:flex;gap:6px;margin-bottom:8px">
           <el-button type="primary" style="flex:1" :loading="creating" @click="newNote">＋ 新建笔记</el-button>
           <el-button style="flex:0 0 auto" @click="addFolder" title="新建文件夹">
@@ -635,6 +640,9 @@ const rendered = computed(() => (type.value === 'md'
         </template>
       </div>
     </el-aside>
+    <!-- 侧栏宽度拖拽把手：拖动改变宽度，双击复位 -->
+    <div class="aside-rs" :class="{ on: asideDrag }" :style="{ left: asideW + 'px' }"
+         title="拖动调整宽度，双击恢复默认" @pointerdown="onAsideDown" @dblclick="resetAside" />
 
     <el-main class="nmain">
       <div class="page-head">
@@ -708,7 +716,7 @@ const rendered = computed(() => (type.value === 'md'
 </template>
 
 <style scoped>
-.np{height:100%;background:var(--el-bg-color-page)}
+.np{height:100%;background:var(--el-bg-color-page);position:relative}
 .nside{background:#FBFBFC;border-right:1px solid var(--el-border-color-light);padding:12px 8px;overflow:auto}
 .nlist{margin-top:8px}
 .ngroup{display:flex;align-items:center;gap:5px;padding:8px 11px 4px;font-size:var(--fs-2xs);
