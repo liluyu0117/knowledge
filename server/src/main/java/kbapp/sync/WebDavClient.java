@@ -80,6 +80,22 @@ public class WebDavClient {
         if (timeout != null) builder.timeout(timeout);
         HttpRequest req = builder.GET().build();
         HttpResponse<byte[]> resp = send(req);
+        // AList 等网关会把下载 302 到对象存储直链（常见为 https，与请求的 http 跨协议，
+        // JDK HttpClient 即便设 followRedirects 也不跟跨协议跳转），这里手动跟随。
+        int redirects = 0;
+        while (resp.statusCode() >= 300 && resp.statusCode() < 400 && redirects < 5) {
+            String loc = resp.headers().firstValue("Location").orElse(null);
+            if (loc == null) break;
+            URI next = resp.uri().resolve(loc);
+            var rb = HttpRequest.newBuilder(next).GET();
+            // 直链主机与网关不同时不再携带网关凭据（避免把 Basic 认证泄露给第三方存储）
+            if (next.getHost() != null && next.getHost().equals(resp.uri().getHost())) {
+                rb.header("Authorization", auth(user, pass));
+            }
+            if (timeout != null) rb.timeout(timeout);
+            resp = send(rb.build());
+            redirects++;
+        }
         if (resp.statusCode() >= 300) throw new IllegalStateException("WebDAV GET 失败: HTTP " + resp.statusCode());
         return resp.body();
     }
