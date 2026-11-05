@@ -419,30 +419,37 @@ public class SyncService {
         List<Map<String, Object>> entries = (List<Map<String, Object>>) (Object) parsed.get("entries");
         Path data = config.dataDir();
         int total = entries.size(), done = 0;
-        for (Map<String, Object> e : entries) {
-            String rel = String.valueOf(e.get("rel"));
-            String hash = String.valueOf(e.get("sha256"));
-            int parts = e.get("parts") instanceof Number n ? n.intValue() : 1;
-            Path target = data.resolve(rel).normalize();
-            if (!target.startsWith(data)) { done++; continue; }
-            Files.createDirectories(target.getParent());
-            java.io.ByteArrayOutputStream content = new java.io.ByteArrayOutputStream();
-            for (int pi = 0; pi < parts; pi++) {
-                String obj = objName(hash, pi, parts);
-                byte[] part = dav.get(c.server(), c.user(), c.pass(), OBJECT_DIR + "/" + obj,
-                        Duration.ofMinutes(15));
-                content.writeBytes(part);
+        // 恢复会连续请求大量对象，阿里云盘 OSS 直链有签名级频率限制（实测 5 连发 403），
+        // 恢复期间把最小间隔放宽到 1.1s，结束后恢复原值。
+        dav.wideThrottle(1100);
+        try {
+            for (Map<String, Object> e : entries) {
+                String rel = String.valueOf(e.get("rel"));
+                String hash = String.valueOf(e.get("sha256"));
+                int parts = e.get("parts") instanceof Number n ? n.intValue() : 1;
+                Path target = data.resolve(rel).normalize();
+                if (!target.startsWith(data)) { done++; continue; }
+                Files.createDirectories(target.getParent());
+                java.io.ByteArrayOutputStream content = new java.io.ByteArrayOutputStream();
+                for (int pi = 0; pi < parts; pi++) {
+                    String obj = objName(hash, pi, parts);
+                    byte[] part = dav.get(c.server(), c.user(), c.pass(), OBJECT_DIR + "/" + obj,
+                            Duration.ofMinutes(15));
+                    content.writeBytes(part);
+                }
+                // app.json 恢复时保留本地 API Key（云端备份里的 Key 是脱敏空值）
+                if (rel.equals("app.json") && Files.exists(target)) {
+                    String cloud = content.toString(java.nio.charset.StandardCharsets.UTF_8);
+                    String merged = mergeAppConfig(Files.readString(target, java.nio.charset.StandardCharsets.UTF_8), cloud);
+                    Files.writeString(target, merged, java.nio.charset.StandardCharsets.UTF_8);
+                } else {
+                    Files.write(target, content.toByteArray());
+                }
+                done++;
+                setP("恢复 " + done + "/" + total + "：" + rel, 10 + done * 88 / Math.max(1, total));
             }
-            // app.json 恢复时保留本地 API Key（云端备份里的 Key 是脱敏空值）
-            if (rel.equals("app.json") && Files.exists(target)) {
-                String cloud = content.toString(java.nio.charset.StandardCharsets.UTF_8);
-                String merged = mergeAppConfig(Files.readString(target, java.nio.charset.StandardCharsets.UTF_8), cloud);
-                Files.writeString(target, merged, java.nio.charset.StandardCharsets.UTF_8);
-            } else {
-                Files.write(target, content.toByteArray());
-            }
-            done++;
-            setP("恢复 " + done + "/" + total + "：" + rel, 10 + done * 88 / Math.max(1, total));
+        } finally {
+            dav.wideThrottle(0);
         }
         progress.set(new Progress(false, "恢复完成", 100, null, (long) json.length / 1024, manifestName,
                 "已恢复 " + total + " 项，API Key 保留本地", startedAt));

@@ -29,23 +29,33 @@ public class WebDavClient {
 
     // 坚果云对 WebDAV 有请求频率限制，连续快速请求会返回 403 —— 全局限速 + 403 自动等待重试
     private volatile long lastReqAt = 0;
-    private static final long MIN_INTERVAL_MS = 450;
 
     private void throttle() {
         long gap = System.currentTimeMillis() - lastReqAt;
-        if (gap < MIN_INTERVAL_MS) {
-            try { Thread.sleep(MIN_INTERVAL_MS - gap); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        long min = MIN_INTERVAL.get();
+        if (gap < min) {
+            try { Thread.sleep(min - gap); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }
         lastReqAt = System.currentTimeMillis();
     }
 
+    /** 临时放宽最小请求间隔（毫秒）；传 0 恢复默认 450。用于恢复这类大批量下载场景。 */
+    public void wideThrottle(int minIntervalMs) {
+        MIN_INTERVAL.set(minIntervalMs <= 0 ? 450 : minIntervalMs);
+    }
+
+    private final java.util.concurrent.atomic.AtomicInteger MIN_INTERVAL =
+            new java.util.concurrent.atomic.AtomicInteger(450);
+
     private HttpResponse<byte[]> send(HttpRequest req) throws Exception {
+        // 阿里云盘 OSS 直链有签名级频率限制：连续快速请求同一签名会 403（实测 5 连发即触发）。
+        // 403 需更长退避（风控窗口约 10-20s），共重试 4 次。
         for (int attempt = 0; ; attempt++) {
             throttle();
             // 每次新建 HttpClient：不复用 TCP 连接，规避坚果云关闭的 keep-alive 死连接
             HttpResponse<byte[]> resp = HttpClient.newHttpClient().send(req, HttpResponse.BodyHandlers.ofByteArray());
-            if (resp.statusCode() != 403 || attempt >= 2) return resp;
-            try { Thread.sleep(8000L * (attempt + 1)); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            if (resp.statusCode() != 403 || attempt >= 4) return resp;
+            try { Thread.sleep(10000L * (attempt + 1)); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }
     }
 
