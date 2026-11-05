@@ -132,14 +132,33 @@ public class TikaExtractor {
                             case NUMERIC -> String.valueOf(cell.getNumericCellValue());
                             case BOOLEAN -> String.valueOf(cell.getBooleanCellValue());
                             case FORMULA -> {
-                                try { yield cell.toString(); }
-                                catch (Exception e) { yield ""; }
+                                // 不能直接 cell.toString()：它会触发公式求值，大表的公式链
+                                // 深度一深就 StackOverflowError（实测 2 份 225K 的工作量表）。
+                                // 只取 Excel 已缓存的计算结果，零求值风险。
+                                try {
+                                    yield switch (cell.getCachedFormulaResultType()) {
+                                        case STRING -> cell.getStringCellValue().trim();
+                                        case NUMERIC -> String.valueOf(cell.getNumericCellValue());
+                                        case BOOLEAN -> String.valueOf(cell.getBooleanCellValue());
+                                        default -> "";
+                                    };
+                                } catch (Exception e) {
+                                    yield "";
+                                }
                             }
                             default -> "";
                         };
                         cells.add(v);
                     }
-                    String line = String.join(" | ", cells).replaceAll("(\\s*\\|\\s*)+$", "");
+                    // 去掉行尾空单元格：按最后一个非空单元格截断即可。
+                    // 原来用 replaceAll("(\\s*\\|\\s*)+$", "") 做，行尾空列一多这个正则
+                    // 会指数级回溯直接 StackOverflowError（实测 2 份 225K 的工作量表）。
+                    int lastNonEmpty = -1;
+                    for (int c = 0; c < cells.size(); c++) {
+                        if (!cells.get(c).isBlank()) lastNonEmpty = c;
+                    }
+                    if (lastNonEmpty < 0) continue;
+                    String line = String.join(" | ", cells.subList(0, lastNonEmpty + 1));
                     if (!line.isBlank()) sb.append(line).append('\n');
                 }
                 if (!sb.isEmpty()) {

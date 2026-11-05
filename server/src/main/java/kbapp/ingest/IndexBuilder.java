@@ -488,7 +488,10 @@ public class IndexBuilder {
                         fm.put("reason", e.getMessage() == null ? e.toString() : e.getMessage());
                         failedList.add(fm);
                     }
-                    log.warn("文件处理失败，跳过 {}: {}", rel, e.toString());
+                    StringBuilder st = new StringBuilder();
+                    StackTraceElement[] tr = e.getStackTrace();
+                    for (int ti = 0; ti < Math.min(12, tr.length); ti++) st.append("\n    at ").append(tr[ti]);
+                    log.warn("文件处理失败，跳过 {}: {}{}", rel, e.toString(), st);
                 }
                 filesDone++;
                 final int fd = filesDone, fa = added, fu = updated, fe = errors;
