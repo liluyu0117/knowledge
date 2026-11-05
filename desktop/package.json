@@ -1,0 +1,64 @@
+{
+  "name": "liangyi-kb-desktop",
+  "productName": "两翼知识库",
+  "version": "0.1.0",
+  "description": "两翼知识库桌面端（Electron 壳 + 内置 Java 服务）",
+  "main": "main.js",
+  "private": true,
+  "author": "两翼研运",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "runtime": "powershell -ExecutionPolicy Bypass -File scripts/build-runtime.ps1",
+    "dist": "electron-builder --win nsis",
+    "pack": "electron-builder --win dir"
+  },
+  "build": {
+    "appId": "com.xjwl.kb.desktop",
+    "productName": "两翼知识库",
+    "directories": {
+      "output": "dist",
+      "buildResources": "icons"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "icons/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/jre",
+        "to": "jre"
+      },
+      {
+        "from": "resources/kb.jar",
+        "to": "kb.jar"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icons/icon.ico",
+      "artifactName": "两翼知识库-${version}-安装包.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "两翼知识库",
+      "deleteAppDataOnUninstall": false
+    }
+  },
+  "devDependencies": {
+    "electron": "28.3.3",
+    "electron-builder": "^25.1.8"
+  }
+}

@@ -33,3 +33,8 @@ portable/*.pkg
 .vscode/
 .DS_Store
 Thumbs.db
+
+# ── 桌面端构建产物（运行时与 jar 由脚本生成，不入库）──
+desktop/resources/jre/
+desktop/resources/kb.jar
+desktop/dist/
