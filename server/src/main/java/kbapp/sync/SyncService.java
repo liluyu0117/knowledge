@@ -59,9 +59,12 @@ public class SyncService {
     });
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicReference<Progress> progress =
-            new AtomicReference<>(new Progress(false, "空闲", 0, null, null, null));
+            new AtomicReference<>(Progress.idle());
 
-    public record Progress(boolean running, String phase, int percent, String error, Long sizeKB, String backupName) {}
+    public record Progress(boolean running, String phase, int percent, String error, Long sizeKB,
+                           String backupName, String detail, Long startedAt) {
+        static Progress idle() { return new Progress(false, "空闲", 0, null, null, null, null, null); }
+    }
 
     public record BackupInfo(String name, long size, long lastModified) {}
 
@@ -105,7 +108,7 @@ public class SyncService {
             } catch (Throwable e) {
                 log.error("备份失败", e);
                 progress.set(new Progress(false, "备份失败", 100,
-                        e.getMessage() == null ? e.toString() : e.getMessage(), null, null));
+                        e.getMessage() == null ? e.toString() : e.getMessage(), null, null, null, startedAt));
             }
         });
         return true;
@@ -120,7 +123,7 @@ public class SyncService {
             } catch (Throwable e) {
                 log.error("恢复失败", e);
                 progress.set(new Progress(false, "恢复失败", 100,
-                        e.getMessage() == null ? e.toString() : e.getMessage(), null, null));
+                        e.getMessage() == null ? e.toString() : e.getMessage(), null, null, null, startedAt));
             }
         });
         return true;
@@ -131,8 +134,46 @@ public class SyncService {
         runBackup();
     }
 
+    private volatile long startedAt;
+
+    /**
+     * 确保远端目录存在：MKCOL 之后用 PROPFIND 回读确认。
+     * AList 等 WebDAV 网关在「刚建完父目录立刻建子目录」时会返回非 2xx，
+     * 而 MKCOL 的响应码默认被吞掉 —— 不校验就会出现「目录不存在 → PUT 404」。
+     */
+    private void ensureDir(SyncCfgFull c, String path) throws Exception {
+        for (int attempt = 1; attempt <= 5; attempt++) {
+            if (dirExists(c, path)) return;
+            try {
+                dav.mkcol(c.server(), c.user(), c.pass(), path);
+            } catch (Exception e) {
+                log.debug("MKCOL {} 失败（第 {} 次）：{}", path, attempt, e.toString());
+            }
+            if (dirExists(c, path)) return;
+            try { Thread.sleep(300L * attempt); } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+        log.warn("远端目录仍未就绪: {}", path);
+    }
+
+    private boolean dirExists(SyncCfgFull c, String path) {
+        try {
+            dav.propfind(c.server(), c.user(), c.pass(), path);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private void setP(String phase, int percent) {
-        progress.set(new Progress(true, phase, percent, null, null, null));
+        setP(phase, percent, null);
+    }
+
+    private void setP(String phase, int percent, String detail) {
+        if (startedAt == 0) startedAt = System.currentTimeMillis();
+        progress.set(new Progress(true, phase, percent, null, null, null, detail, startedAt));
     }
 
     /** 同步内容文件清单：kbdata/ + 根部关键 json/db，app.json 脱敏。 */
@@ -151,7 +192,14 @@ public class SyncService {
 
     private List<FileMeta> buildManifest(List<Path> files, Path root) throws Exception {
         List<FileMeta> out = new ArrayList<>();
+        int total = Math.max(1, files.size());
+        int idx = 0;
         for (Path f : files) {
+            idx++;
+            if (idx % 20 == 0 || idx == total) {
+                setP("计算清单 " + idx + "/" + total, 1 + (int) (idx * 2L / total),
+                        root.relativize(f).toString().replace(java.io.File.separatorChar, '/'));
+            }
             byte[] bytes = Files.readAllBytes(f);
             String rel = root.relativize(f).toString().replace(java.io.File.separatorChar, '/');
             if (rel.equals("app.json")) {
@@ -197,10 +245,11 @@ public class SyncService {
 
     private void runBackup() throws Exception {
         long t0 = System.currentTimeMillis();
+        startedAt = t0;
         SyncCfgFull c = cfg();
-        dav.mkcol(c.server(), c.user(), c.pass(), REMOTE_DIR);
-        dav.mkcol(c.server(), c.user(), c.pass(), MANIFEST_DIR);
-        dav.mkcol(c.server(), c.user(), c.pass(), OBJECT_DIR);
+        ensureDir(c, REMOTE_DIR);
+        ensureDir(c, MANIFEST_DIR);
+        ensureDir(c, OBJECT_DIR);
 
         List<Path> files = syncFiles();
         Path data = config.dataDir();
@@ -209,11 +258,17 @@ public class SyncService {
 
         // 断点续传：远端已有对象集合（含分片名）
         Set<String> knownObjects = new HashSet<>();
+        knownObjectsCache.clear();
         try {
             for (WebDavClient.Entry e : dav.propfind(c.server(), c.user(), c.pass(), OBJECT_DIR)) {
                 if (!e.directory()) knownObjects.add(e.name());
             }
-        } catch (Exception ignored) { }
+            // 关键：把远端已有对象灌进缓存。之前这里漏了，导致 isPartKnown 恒为 false →
+            // 每个分片都被判定失败并重传 3 次（中间还 sleep 10s、20s），1.3G 数据要跑一个多小时。
+            knownObjectsCache.addAll(knownObjects);
+        } catch (Exception e) {
+            log.warn("读取远端对象列表失败（将按全量上传处理）：{}", e.toString());
+        }
 
         // 待上传分片（按文件内字节数估算流量）
         Set<String> failedHashes = new HashSet<>();
@@ -232,40 +287,54 @@ public class SyncService {
         setP("待上传 " + changed.size() + "/" + files.size() + " 个文件", 3);
 
         // 上传变化文件的分片（0-85%）
+        ensureDir(c, OBJECT_DIR);
         int done = 0;
         long sent = 0;
         for (FileMeta fm : changed) {
             Path f = data.resolve(fm.rel());
-            byte[] bytes = Files.readAllBytes(f);
             boolean uploaded = true;
             int parts = Math.max(1, fm.parts());
-            for (int pi = 0; pi < parts && uploaded; pi++) {
-                int st = pi * PART_SIZE;
-                byte[] chunkData = Arrays.copyOfRange(bytes, st, Math.min(bytes.length, st + PART_SIZE));
-                String obj = objName(fm.sha256(), pi, parts);
-                for (int attempt = 1; attempt <= 3 && !isPartKnown(obj); attempt++) {
-                    try {
-                        dav.put(c.server(), c.user(), c.pass(), OBJECT_DIR + "/" + obj, chunkData,
-                                Duration.ofMinutes(15));
-                        uploaded = uploaded && true;
-                        break;
-                    } catch (Exception e) {
-                        log.warn("分片上传失败（第 {} 次）{}：{}", attempt, obj.substring(0, Math.min(12, obj.length())),
-                                e.toString());
-                        if (attempt < 3) {
-                            try { Thread.sleep(10000L * attempt); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            try (var ch = java.nio.channels.FileChannel.open(f, java.nio.file.StandardOpenOption.READ)) {
+                for (int pi = 0; pi < parts && uploaded; pi++) {
+                    long st = (long) pi * PART_SIZE;
+                    int len = (int) Math.min(PART_SIZE, ch.size() - st);
+                    java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(len);
+                    ch.position(st);
+                    while (buf.hasRemaining() && ch.read(buf) > 0) { /* 读满一片 */ }
+                    byte[] chunkData = buf.array();
+                    String obj = objName(fm.sha256(), pi, parts);
+                    if (knownObjectsCache.contains(obj)) {          // 断点续传：远端已有就跳过
+                        sent += chunkData.length;
+                        continue;
+                    }
+                    boolean ok = false;
+                    for (int attempt = 1; attempt <= 3 && !ok; attempt++) {
+                        try {
+                            dav.put(c.server(), c.user(), c.pass(), OBJECT_DIR + "/" + obj, chunkData,
+                                    Duration.ofMinutes(15));
+                            knownObjectsCache.add(obj);              // 成功即入缓存，避免被误判失败
+                            ok = true;
+                        } catch (Exception e) {
+                            log.warn("分片上传失败（第 {} 次）{}：{}", attempt,
+                                    obj.substring(0, Math.min(12, obj.length())), e.toString());
+                            if (attempt < 3) {
+                                try { Thread.sleep(3000L * attempt); } catch (InterruptedException ie) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
                         }
                     }
+                    if (!ok) uploaded = false;
+                    sent += chunkData.length;
+                    int pct = 3 + (int) (sent * 82 / Math.max(1, changedBytes));
+                    setP("上传 " + done + "/" + changed.size(), Math.min(85, pct),
+                            fm.rel() + (parts > 1 ? "（分片 " + (pi + 1) + "/" + parts + "）" : ""));
                 }
-                if (!isPartKnown(obj)) uploaded = false;
-                sent += chunkData.length;
-                setP("上传 " + fm.rel() + (parts > 1 ? " 分片 " + (pi + 1) + "/" + parts : ""),
-                        3 + (int) (sent * 82 / Math.max(1, changedBytes)));
             }
             if (isPartKnown(fm.sha256(), parts)) done++;
             else failedHashes.add(fm.sha256());
-            setP("上传变更 " + done + "/" + changed.size() + "：" + fm.rel(),
-                    3 + (int) (sent * 82 / Math.max(1, changedBytes)));
+            setP("上传 " + done + "/" + changed.size(), Math.min(85, 3 + (int) (sent * 82 / Math.max(1, changedBytes))),
+                    fm.rel());
         }
 
         // 上传清单快照（85-100%）
@@ -289,8 +358,14 @@ public class SyncService {
                 M.writerWithDefaultPrettyPrinter().writeValueAsBytes(snapshot), Duration.ofMinutes(10));
 
         pruneManifests(c);
-        progress.set(new Progress(false, "备份完成", 100, null,
-                (long) manifestBytesGuard(), manifestName));
+        long totalBytes = 0;
+        for (Map<String, Object> e : entryList) {
+            Object sz = e.get("size");
+            if (sz instanceof Number n) totalBytes += n.longValue();
+        }
+        progress.set(new Progress(false, "备份完成", 100, null, totalBytes / 1024, manifestName,
+                "共 " + entryList.size() + " 个文件（本次上传 " + changed.size() + " 个），耗时 "
+                        + (System.currentTimeMillis() - t0) / 1000 + "s", startedAt));
         log.info("增量备份完成: 变更 {} / 共 {} 文件，失败 {}，耗时 {}ms",
                 changed.size(), manifest.size(), failedHashes.size(), System.currentTimeMillis() - t0);
     }
@@ -365,7 +440,8 @@ public class SyncService {
             done++;
             setP("恢复 " + done + "/" + total + "：" + rel, 10 + done * 88 / Math.max(1, total));
         }
-        progress.set(new Progress(false, "恢复完成", 100, null, (long) json.length / 1024, manifestName));
+        progress.set(new Progress(false, "恢复完成", 100, null, (long) json.length / 1024, manifestName,
+                "已恢复 " + total + " 项，API Key 保留本地", startedAt));
         log.info("增量恢复完成: {}（{} 项），API Key 保留本地", manifestName, total);
     }
 
@@ -459,7 +535,8 @@ public class SyncService {
                 Files.copy(zin, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             }
         }
-        progress.set(new Progress(false, "恢复完成", 100, null, (long) zip.length / 1024, cloudName));
+        progress.set(new Progress(false, "恢复完成", 100, null, (long) zip.length / 1024, cloudName,
+                "已从整包恢复，索引将自动重建", startedAt));
     }
 
     private String sha256(byte[] data) {

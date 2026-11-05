@@ -39,7 +39,9 @@ const syncCfg = ref({ server: '', user: '', appPassword: '', autoDaily: false })
 const syncPwd = ref('')
 const hasSyncPwd = ref(false)
 const syncRunning = ref(false)
-const syncProg = ref({ phase: '', percent: 0, error: null, sizeKB: null })
+const syncProg = ref({ phase: '', percent: 0, error: null, sizeKB: null, detail: '', startedAt: null })
+const syncElapsed = ref(0)
+let syncElapsedTimer = null
 let syncProgTimer = null
 
 const rerankKey = ref('')
@@ -165,6 +167,7 @@ function initDraft(list) {
 }
 
 onMounted(async () => {
+  resumeSyncIfRunning()
   const st0 = applySettings(await api.get('/api/settings'), { resetDraft: true })
   autoMinutes.value = st0.index?.autoMinutes ?? 0
   chunkMode.value = st0.index?.chunkMode || 'fixed'
@@ -181,7 +184,10 @@ onMounted(async () => {
   window.addEventListener('beforeunload', onBeforeUnload)
 })
 
-onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload))
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload)
+  stopSyncTimers()
+})
 
 /** 刷新/关标签页时提醒（SPA 内跳转由路由守卫处理） */
 function onBeforeUnload(e) {
@@ -531,19 +537,53 @@ async function testSync() {
   }
 }
 
+function stopSyncTimers() {
+  if (syncProgTimer) { clearInterval(syncProgTimer); syncProgTimer = null }
+  if (syncElapsedTimer) { clearInterval(syncElapsedTimer); syncElapsedTimer = null }
+}
+
+/** 轮询备份/恢复进度；页面刷新后同样靠它把进度条接回来 */
 function pollSync() {
-  syncProgTimer = setInterval(() => {
+  stopSyncTimers()
+  const tick = () => {
     api.get('/api/sync/progress').then((p) => {
       syncProg.value = p
+      if (p.startedAt) syncElapsed.value = Math.max(0, Math.round((Date.now() - p.startedAt) / 1000))
       if (!p.running) {
-        clearInterval(syncProgTimer)
+        stopSyncTimers()
         syncRunning.value = false
         if (p.phase === '备份完成') ElMessage.success(`备份完成（${p.sizeKB} KB）`)
         else if (p.phase === '恢复完成') ElMessage.success('恢复完成，索引将自动重建')
         else if (p.error) ElMessage.error(p.error)
       }
-    })
-  }, 600)
+    }).catch(() => { /* 网络抖动：下次轮询继续 */ })
+  }
+  const timer = setInterval(tick, 800)
+  syncProgTimer = timer
+  syncElapsedTimer = setInterval(() => {
+    if (syncProg.value.startedAt) {
+      syncElapsed.value = Math.max(0, Math.round((Date.now() - syncProg.value.startedAt) / 1000))
+    }
+  }, 1000)
+  tick()
+}
+
+/** 页面加载/回到本页时，若后端仍在跑任务，把进度条接回来（刷新不再丢进度） */
+async function resumeSyncIfRunning() {
+  try {
+    const p = await api.get('/api/sync/progress')
+    if (p && p.running) {
+      syncProg.value = p
+      syncRunning.value = true
+      pollSync()
+    }
+  } catch { /* 忽略 */ }
+}
+
+function fmtElapsed(sec) {
+  const s = Math.max(0, Math.floor(sec || 0))
+  const m = Math.floor(s / 60)
+  return m > 0 ? `${m} 分 ${s % 60} 秒` : `${s} 秒`
 }
 
 async function doBackup() {
@@ -1017,7 +1057,8 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
 
               <div v-if="syncRunning" class="prog">
                 <el-progress :percentage="syncProg.percent" :stroke-width="8" :show-text="false" status="warning" />
-                <div class="pt2">{{ syncProg.phase }}（{{ syncProg.percent }}%）</div>
+                <div class="pt2">{{ syncProg.phase }}（{{ syncProg.percent }}%）· 已用 {{ fmtElapsed(syncElapsed) }}</div>
+                <div v-if="syncProg.detail" class="pt3">{{ syncProg.detail }}</div>
               </div>
 
               <div class="notes">
@@ -1156,6 +1197,7 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
   overflow:hidden;text-overflow:ellipsis;max-width:100%}
 
 .prog{margin-top:14px}
+.pt3{font-size:var(--fs-2xs);color:var(--ink3);margin-top:2px;word-break:break-all}
 .pt2{font-size:var(--fs-2xs);color:var(--ink3);margin-top:5px}
 .empty{padding:16px 0;font-size:var(--fs-sm);color:var(--ink3)}
 </style>
