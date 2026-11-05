@@ -50,6 +50,7 @@ public class SyncService {
 
     private final ConfigService config;
     private final WebDavClient dav;
+    private final kbapp.chat.ChatStore chatStore;
     private static final ObjectMapper M = new ObjectMapper();
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
@@ -74,9 +75,10 @@ public class SyncService {
 
     private record FileMeta(String rel, String sha256, long size, int parts) {}
 
-    public SyncService(ConfigService config, WebDavClient dav) {
+    public SyncService(ConfigService config, WebDavClient dav, kbapp.chat.ChatStore chatStore) {
         this.config = config;
         this.dav = dav;
+        this.chatStore = chatStore;
     }
 
     public Progress progress() { return progress.get(); }
@@ -246,6 +248,8 @@ public class SyncService {
     private void runBackup() throws Exception {
         long t0 = System.currentTimeMillis();
         startedAt = t0;
+        // 会话库是 WAL 模式，先合并回主库再收集文件，否则备份里的 chat.db 是空的
+        chatStore.checkpoint();
         SyncCfgFull c = cfg();
         ensureDir(c, REMOTE_DIR);
         ensureDir(c, MANIFEST_DIR);

@@ -1,6 +1,9 @@
 package kbapp.chat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.Set;
 import org.springframework.stereotype.Service;
 
@@ -19,6 +22,8 @@ import java.util.UUID;
 /** 会话与消息存储：.kb/chat.db（SQLite）。单用户，写操作串行化。 */
 @Service
 public class ChatStore {
+
+    private static final Logger log = LoggerFactory.getLogger(ChatStore.class);
 
     public record Session(String id, String title, String createdAt, String updatedAt) {}
     public record Message(String id, String sessionId, String role, String content,
@@ -284,5 +289,25 @@ public class ChatStore {
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /**
+     * 把 WAL 合并回主库。
+     * 备份/退出前必须调用：chat.db 用的是 WAL 模式，数据先写 -wal 文件，
+     * 主库可能还是空的——只备份 chat.db 会得到「没有会话」的空库。
+     */
+    public synchronized void checkpoint() {
+        try (Statement st = conn.createStatement()) {
+            st.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+        } catch (Exception e) {
+            log.warn("chat.db WAL checkpoint 失败（不影响使用）: {}", e.toString());
+        }
+    }
+
+    /** 优雅退出：先落盘再关连接，避免 -wal/-shm 残留。 */
+    @PreDestroy
+    public void close() {
+        checkpoint();
+        try { conn.close(); } catch (Exception ignored) { }
     }
 }
