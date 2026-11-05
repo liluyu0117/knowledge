@@ -35,6 +35,7 @@ const newDlg = ref(false)      // 新建笔记的格式选择弹窗
 const newType = ref('md')
 const newFolder = ref('')          // 新建对话框里选的归属文件夹
 const draftFolder = ref('')        // 当前草稿的归属文件夹（创建时提交）
+const contentLoaded = ref(true)   // 正文是否已加载完成；未完成时禁止保存（防止空内容覆盖）
 const noteFolders = ref([])        // 现有文件夹列表
 const movingId = ref('')           // 正在移动的笔记 id
 // 按文件夹分组：根目录一组，其余按文件夹名分组（侧栏分组展示）
@@ -160,6 +161,11 @@ function onTitleInput() {
 async function persist(manual = false) {
   // 防重入：草稿态连续点击会 POST 出两条重复笔记
   if (saveState.value === 'saving') return false
+  // 正文未加载完成时绝不保存（此时 content 为空，保存会把原笔记清空）
+  if (currentId.value && !contentLoaded.value) {
+    if (manual) ElMessage.warning('正文还在加载，请稍候再保存（避免用空内容覆盖原笔记）')
+    return false
+  }
   const raw = (title.value || '').trim()
   const c = content.value || ''
   if (!raw && !c.trim()) {
@@ -272,11 +278,13 @@ function startDraft(t) {
   focusTitle()
 }
 
-function resetDraft(t = 'md') {
+function resetDraft(t = 'md', folder = '') {
   currentId.value = ''
   title.value = ''
   type.value = t
+  draftFolder.value = folder
   content.value = ''
+  contentLoaded.value = true
   dirty.value = false
   saveState.value = 'idle'
   lastSavedAt.value = ''
@@ -551,12 +559,20 @@ function doSelect(n) {
   title.value = n.title
   type.value = n.type
   content.value = ''
+  contentLoaded.value = false   // 正文还没回来：禁止保存，否则会用空内容覆盖原文件
   dirty.value = false
   manualSaved.value = true
   saveState.value = 'saved'
   lastSavedAt.value = n.updatedAt.slice(11, 19)
   api.get('/api/notes/' + n.id).then((d) => {
-    content.value = d.content
+    // 竞态保护：响应回来时用户可能已切到别的笔记，不能把 A 的正文塞进 B
+    if (currentId.value !== n.id) return
+    content.value = d.content || ''
+    contentLoaded.value = true
+  }).catch((e) => {
+    if (currentId.value !== n.id) return
+    saveState.value = 'error'
+    ElMessage.error('笔记内容加载失败，已暂停自动保存（防止覆盖）：' + (e.message || e))
   })
 }
 

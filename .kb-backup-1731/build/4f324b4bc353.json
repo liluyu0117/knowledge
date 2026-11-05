@@ -1,0 +1,22 @@
+{
+  "kbId" : "4f324b4bc353",
+  "kbName" : "学习资料",
+  "phase" : "done",
+  "builtAt" : 1793775900824,
+  "durationMs" : 1221298,
+  "files" : 57,
+  "indexed" : 57,
+  "chunks" : 4114,
+  "added" : 57,
+  "updated" : 0,
+  "skipped" : 0,
+  "removed" : 0,
+  "embedded" : 4114,
+  "vectorFailed" : 0,
+  "errors" : 0,
+  "vectorDim" : 1024,
+  "failed" : [ ],
+  "empty" : [ ],
+  "emptySigs" : { },
+  "chunkMode" : "parent-child"
+}

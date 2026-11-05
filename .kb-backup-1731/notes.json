@@ -1,0 +1,33 @@
+[ {
+  "id" : "cdcd5b7977ed",
+  "title" : "精准化接入链接",
+  "type" : "txt",
+  "createdAt" : "2026-11-04T16:15:34",
+  "updatedAt" : "2026-11-04T16:58:15",
+  "kbId" : "notes",
+  "folder" : ""
+}, {
+  "id" : "6e8d39e3da7c",
+  "title" : "低风险上线",
+  "type" : "txt",
+  "createdAt" : "2026-11-03T15:51:55",
+  "updatedAt" : "2026-11-04T17:08:43",
+  "kbId" : "notes",
+  "folder" : ""
+}, {
+  "id" : "bf932837e819",
+  "title" : "测试笔记用于测试索引",
+  "type" : "txt",
+  "createdAt" : "2026-11-04T14:06:06",
+  "updatedAt" : "2026-11-04T17:31:24",
+  "kbId" : "notes",
+  "folder" : ""
+}, {
+  "id" : "820c517ea66f",
+  "title" : "存在性能上线",
+  "type" : "txt",
+  "createdAt" : "2026-11-03T15:51:36",
+  "updatedAt" : "2026-11-04T17:32:05",
+  "kbId" : "notes",
+  "folder" : ""
+} ]

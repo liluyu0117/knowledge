@@ -76,8 +76,42 @@ public class NotesStore {
                 notes = new ArrayList<>(loaded.stream().map((n) -> normalize(n)).toList());
             }
             migrateLegacy();
+            repairPaths();
         } catch (IOException e) {
             log.warn("读取 notes.json 失败", e);
+        }
+    }
+
+    /**
+     * 路径自愈：注册表的 folder 与磁盘实际位置不一致时（例如文件被拖进子目录
+     * 但归属没落库、或旧版本遗留），把 folder 纠正为文件真实所在目录。
+     * 否则应用会去错误路径读文件、读到空内容 —— 表面现象就是「笔记全空了」。
+     */
+    private void repairPaths() {
+        boolean changed = false;
+        try {
+            for (int i = 0; i < notes.size(); i++) {
+                Note n = notes.get(i);
+                Path expect = noteFile(n);
+                if (Files.isRegularFile(expect)) continue;      // 位置正确
+                String fileName = sanitizeFileName(n.title()) + "." + n.type();
+                Path found = null;
+                try (var st = Files.walk(notesDir())) {
+                    found = st.filter(Files::isRegularFile)
+                            .filter((p) -> p.getFileName().toString().equals(fileName))
+                            .findFirst().orElse(null);
+                } catch (IOException ignored) { }
+                if (found == null) continue;                    // 真找不到：保持原样，不猜
+                Path parent = found.getParent();
+                String rel = parent.equals(notesDir()) ? "" : notesDir().relativize(parent).toString().replace('\\', '/');
+                if (rel.equals(n.folderOrRoot())) continue;
+                notes.set(i, new Note(n.id(), n.title(), n.type(), n.createdAt(), n.updatedAt(), n.kbId(), rel));
+                changed = true;
+                log.warn("笔记「{}」归属已纠正：{} → 「{}」（按磁盘实际位置）", n.title(), n.folderOrRoot(), rel);
+            }
+            if (changed) save();
+        } catch (Exception e) {
+            log.warn("笔记路径自愈失败（不影响启动）: {}", e.toString());
         }
     }
 
@@ -209,6 +243,17 @@ public class NotesStore {
         Note n = byId(id);
         if (n == null) return null;
         Path f = fileOf(n);
+        // 自愈：主文件缺失或被清空，但历史快照有内容 → 从快照恢复，避免用户看到「空笔记」
+        try {
+            boolean empty = !Files.exists(f) || Files.size(f) == 0;
+            Path snap = nonEmptySnapshot(n);
+            if (empty && Files.exists(snap) && Files.size(snap) > 0) {
+                Files.createDirectories(f.getParent());
+                Files.copy(snap, f, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                f = fileOf(n);
+                log.warn("笔记「{}」正文缺失/为空，已从历史快照恢复（{} 字节）", n.title(), Files.size(f));
+            }
+        } catch (IOException ignored) { }
         if (!Files.exists(f)) return "";
         try {
             if ("docx".equals(n.type())) {
@@ -433,6 +478,24 @@ public class NotesStore {
         if (renamed && notes.stream().anyMatch((x) -> !x.id().equals(id) && x.title().equals(t))) {
             throw new IllegalArgumentException("已存在同名笔记「" + t + "」");
         }
+        // ── 数据保护：禁止用空内容覆盖已有的非空笔记 ──
+        // 前端在内容未加载完成（或路径不同步读不到文件）时触发自动保存，曾导致笔记被清空。
+        // 判定依据：① 当前文件非空  ② 历史快照非空（文件已被清空但曾有过内容，同样拦截）
+        String newContent = content == null ? "" : content;
+        if (newContent.isBlank()) {
+            Path cur = fileOf(n);
+            long curSize = 0;
+            try { if (Files.exists(cur)) curSize = Files.size(cur); } catch (IOException ignored) { }
+            Path snap = nonEmptySnapshot(n);
+            long snapSize = 0;
+            try { if (Files.exists(snap)) snapSize = Files.size(snap); } catch (IOException ignored) { }
+            if (curSize > 0 || snapSize > 0) {
+                long known = Math.max(curSize, snapSize);
+                throw new IllegalArgumentException(
+                        "内容为空，已阻止覆盖（该笔记原有 " + known + " 字节内容）。请刷新页面确认内容已加载后再编辑；"
+                                + "确要清空请先输入一个空格再保存");
+            }
+        }
         Path oldFile = fileOf(n);
         Note nn = new Note(n.id(), t, n.type(), n.createdAt(), java.time.LocalDateTime.now().withNano(0).toString(), n.kbId(), n.folderOrRoot());
         notes.removeIf((x) -> x.id().equals(id));
@@ -444,7 +507,7 @@ public class NotesStore {
                 throw new IllegalStateException("移动笔记文件失败: " + e.getMessage(), e);
             }
         }
-        writeFile(nn, content == null ? "" : content);
+        writeFile(nn, newContent);
         save();
         scheduleRebuild();
     }
@@ -459,11 +522,41 @@ public class NotesStore {
         }
     }
 
+    /** 历史快照：记录该笔记「最近一次非空内容」，用于判断空覆盖是否安全。 */
+    private Path nonEmptySnapshot(Note n) {
+        return paths.dataDir().resolve("notes-history").resolve(n.id()).resolve(".nonempty." + n.type());
+    }
+
+    /** 覆盖前把旧内容留一份历史版本（每篇保留最近 20 份），防止误覆盖丢数据。 */
+    private void backupOld(Note n, Path target) {
+        try {
+            if (!Files.exists(target) || Files.size(target) == 0) return;
+            Path hist = paths.dataDir().resolve("notes-history").resolve(n.id());
+            Files.createDirectories(hist);
+            // 最近一次非空内容（供空覆盖拦截判定，不参与 20 份轮转）
+            Files.copy(target, nonEmptySnapshot(n), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            String stamp = java.time.LocalDateTime.now().toString().replace(":", "-").replace(".", "-");
+            Files.copy(target, hist.resolve(stamp + "." + n.type()), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            // 只保留最近 20 份
+            try (var st = Files.list(hist)) {
+                List<Path> olds = st.filter((p) -> !p.getFileName().toString().startsWith(".nonempty"))
+                        .sorted(java.util.Comparator.comparingLong((Path p) -> p.toFile().lastModified()))
+                        .toList();
+                for (int i = 0; i < olds.size() - 20; i++) {
+                    try { Files.delete(olds.get(i)); } catch (IOException ignored) { }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("笔记历史备份失败（不影响保存）: {}", e.toString());
+        }
+    }
+
     private void writeFile(Note n, String content) {
         try {
             Files.createDirectories(noteDir(n));
             // 同名文件先删（重命名场景下 move 之后旧名已不在，这里覆盖正文即可）
             Path f = noteDir(n).resolve(sanitizeFileName(n.title()) + "." + n.type());
+            backupOld(n, f);   // 覆盖前留历史版本
             if ("docx".equals(n.type())) {
                 try (var doc = new XWPFDocument()) {
                     for (String line : content.split("\n", -1)) {
@@ -474,6 +567,13 @@ public class NotesStore {
                 }
             } else {
                 Files.writeString(f, content, StandardCharsets.UTF_8);
+            }
+            // 记下最近一次非空内容（新建笔记也要记，否则后续空写入无从判断）
+            if (!content.isBlank()) {
+                try {
+                    Files.createDirectories(nonEmptySnapshot(n).getParent());
+                    Files.copy(f, nonEmptySnapshot(n), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException ignored) { }
             }
         } catch (IOException e) {
             throw new IllegalStateException("写入笔记文件失败", e);

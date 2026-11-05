@@ -1,0 +1,24 @@
+{
+  "kbId" : "1361770ef01a",
+  "kbName" : "测试",
+  "phase" : "done",
+  "builtAt" : 1793611095852,
+  "durationMs" : 627,
+  "files" : 45,
+  "indexed" : 44,
+  "chunks" : 936,
+  "added" : 0,
+  "updated" : 0,
+  "skipped" : 45,
+  "removed" : 0,
+  "embedded" : 0,
+  "vectorFailed" : 0,
+  "errors" : 0,
+  "vectorDim" : 1024,
+  "failed" : [ ],
+  "empty" : [ "两翼/上线方案/20261023/上线配置修改/流程环节配置.docx" ],
+  "emptySigs" : {
+    "两翼/上线方案/20261023/上线配置修改/流程环节配置.docx" : "954162:1792640093896"
+  },
+  "chunkMode" : "parent-child"
+}

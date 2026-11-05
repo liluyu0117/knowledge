@@ -172,8 +172,15 @@ public class NotesController {
 
     @PutMapping("/{id}")
     public Map<String, Object> update(@PathVariable String id, @RequestBody NoteBody body) {
-        store.update(id, body.title(), body.content());
-        return Map.of("ok", true);
+        try {
+            store.update(id, body.title(), body.content());
+            return view(store.byId(id));
+        } catch (IllegalArgumentException e) {
+            // 业务校验失败（如空内容覆盖保护）：返回可读错误，前端按提示展示
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("error", e.getMessage());
+            return m;
+        }
     }
 
     /** 重命名：只改文件名，不动正文；重名返回 ok=false 让前端就地提示。 */
