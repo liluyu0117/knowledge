@@ -138,6 +138,17 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      - name: 输出后端构建错误（失败时）
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path 'mvn-build.log') {
+            Get-Content 'mvn-build.log' | Select-String -Pattern '\[ERROR\]' | Select-Object -First 15 |
+              ForEach-Object { Write-Host "::error::$($_.Line)" }
+          } else {
+            Write-Host "::error::mvn-build.log 未生成，mvn 可能未启动"
+          }
+
       - name: 上传构建日志（失败时）
         if: failure()
         uses: actions/upload-artifact@v4
