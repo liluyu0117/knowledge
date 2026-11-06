@@ -45,7 +45,7 @@
         }
       ],
       "icon": "icons/icon.ico",
-      "artifactName": "两翼知识库-${version}-安装包.${ext}"
+      "artifactName": "LiangyiKB-${version}-setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
