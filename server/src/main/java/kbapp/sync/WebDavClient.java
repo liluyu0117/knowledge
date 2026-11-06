@@ -48,14 +48,19 @@ public class WebDavClient {
             new java.util.concurrent.atomic.AtomicInteger(450);
 
     private HttpResponse<byte[]> send(HttpRequest req) throws Exception {
-        // 阿里云盘 OSS 直链有签名级频率限制：连续快速请求同一签名会 403（实测 5 连发即触发）。
-        // 403 需更长退避（风控窗口约 10-20s），共重试 4 次。
+        // 两类可重试错误：
+        // - 403：云盘直链签名的频率风控，窗口约 10-20s，需要长退避；
+        // - 5xx：网关/上游瞬时失败（AList 代理阿里云盘时常返回 500），短退避即可。
         for (int attempt = 0; ; attempt++) {
             throttle();
             // 每次新建 HttpClient：不复用 TCP 连接，规避坚果云关闭的 keep-alive 死连接
             HttpResponse<byte[]> resp = HttpClient.newHttpClient().send(req, HttpResponse.BodyHandlers.ofByteArray());
-            if (resp.statusCode() != 403 || attempt >= 4) return resp;
-            try { Thread.sleep(10000L * (attempt + 1)); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            int code = resp.statusCode();
+            boolean risk403 = code == 403;
+            boolean transient5xx = code >= 500 && code < 600;
+            if ((!risk403 && !transient5xx) || attempt >= 4) return resp;
+            long waitMs = risk403 ? 10000L * (attempt + 1) : 2000L * (1L << attempt);
+            try { Thread.sleep(waitMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return resp; }
         }
     }
 

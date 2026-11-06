@@ -545,11 +545,17 @@ function stopSyncTimers() {
 /** 轮询备份/恢复进度；页面刷新后同样靠它把进度条接回来 */
 function pollSync() {
   stopSyncTimers()
+  let seenRunning = false
+  let idleTicks = 0
   const tick = () => {
     api.get('/api/sync/progress').then((p) => {
       syncProg.value = p
       if (p.startedAt) syncElapsed.value = Math.max(0, Math.round((Date.now() - p.startedAt) / 1000))
+      if (p.running) { seenRunning = true; idleTicks = 0 }
       if (!p.running) {
+        // 任务刚提交、工作线程尚未写入进度时，后端可能仍返回「空闲」；
+        // 宽限约 10 秒再判定结束，避免进度条刚出现就消失。
+        if (!seenRunning && p.phase === '空闲' && ++idleTicks < 12) return
         stopSyncTimers()
         syncRunning.value = false
         if (p.phase === '备份完成') ElMessage.success(`备份完成（${p.sizeKB} KB）`)
@@ -572,8 +578,9 @@ function pollSync() {
 async function resumeSyncIfRunning() {
   try {
     const p = await api.get('/api/sync/progress')
-    if (p && p.running) {
-      syncProg.value = p
+    if (!p) return
+    syncProg.value = p   // 保留上次结果（失败原因可继续显示）
+    if (p.running) {
       syncRunning.value = true
       pollSync()
     }
@@ -612,6 +619,7 @@ function doRestore() {
       if (!latest) { ElMessage.error('云端没有可恢复的备份'); return }
       const r = await api.post('/api/sync/restore', { name: latest })
       if (r.started) { syncRunning.value = true; pollSync() }
+      else ElMessage.warning('已有同步任务在进行中，请等待当前任务结束')
     } catch (e) {
       ElMessage.error('恢复失败：' + (e.message || e))
     } finally {
@@ -1060,6 +1068,10 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
                 <div class="pt2">{{ syncProg.phase }}（{{ syncProg.percent }}%）· 已用 {{ fmtElapsed(syncElapsed) }}</div>
                 <div v-if="syncProg.detail" class="pt3">{{ syncProg.detail }}</div>
               </div>
+              <div v-else-if="syncProg.error" class="prog">
+                <div class="pt2 perr">上次同步失败：{{ syncProg.error }}</div>
+                <div class="pt3">可再次点击按钮重试；若反复失败请查看日志</div>
+              </div>
 
               <div class="notes">
                 <div class="note-line">同步范围：文档副本 · 会话 · 智能体配置（<b>不含 API Key 与索引</b>）</div>
@@ -1199,5 +1211,6 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
 .prog{margin-top:14px}
 .pt3{font-size:var(--fs-2xs);color:var(--ink3);margin-top:2px;word-break:break-all}
 .pt2{font-size:var(--fs-2xs);color:var(--ink3);margin-top:5px}
+.perr{color:#c45656}
 .empty{padding:16px 0;font-size:var(--fs-sm);color:var(--ink3)}
 </style>

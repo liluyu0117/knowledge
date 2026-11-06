@@ -104,6 +104,10 @@ public class SyncService {
 
     public boolean startBackup() {
         if (!running.compareAndSet(false, true)) return false;
+        startedAt = System.currentTimeMillis();
+        // 先同步置为「运行中」再提交任务：否则前端首次轮询可能拿到旧的「空闲」状态，
+        // 刚弹出的进度条会被立刻掐掉。
+        progress.set(new Progress(true, "准备备份", 1, null, null, null, null, startedAt));
         worker.submit(() -> {
             try {
                 runBackup();
@@ -111,6 +115,9 @@ public class SyncService {
                 log.error("备份失败", e);
                 progress.set(new Progress(false, "备份失败", 100,
                         e.getMessage() == null ? e.toString() : e.getMessage(), null, null, null, startedAt));
+            } finally {
+                // 必须复位：否则失败一次后，后续所有备份/恢复都会因标志未复位而直接返回 false
+                running.set(false);
             }
         });
         return true;
@@ -118,6 +125,8 @@ public class SyncService {
 
     public boolean startRestore(String cloudName) {
         if (!running.compareAndSet(false, true)) return false;
+        startedAt = System.currentTimeMillis();
+        progress.set(new Progress(true, "准备恢复", 1, null, null, null, null, startedAt));
         worker.submit(() -> {
             try {
                 if (cloudName.endsWith(".json")) runIncrementRestore(cloudName);
@@ -126,6 +135,8 @@ public class SyncService {
                 log.error("恢复失败", e);
                 progress.set(new Progress(false, "恢复失败", 100,
                         e.getMessage() == null ? e.toString() : e.getMessage(), null, null, null, startedAt));
+            } finally {
+                running.set(false);
             }
         });
         return true;
@@ -419,9 +430,10 @@ public class SyncService {
         List<Map<String, Object>> entries = (List<Map<String, Object>>) (Object) parsed.get("entries");
         Path data = config.dataDir();
         int total = entries.size(), done = 0;
-        // 恢复会连续请求大量对象，阿里云盘 OSS 直链有签名级频率限制（实测 5 连发 403），
-        // 恢复期间把最小间隔放宽到 1.1s，结束后恢复原值。
+        // 批量下载会被网关/云盘限流（AList→阿里云盘实测连续请求会 403/500），
+        // 恢复期放宽最小间隔，且单个文件失败不中断整体（靠断点续传多轮补齐）。
         dav.wideThrottle(1100);
+        List<String> failed = new ArrayList<>();
         try {
             for (Map<String, Object> e : entries) {
                 String rel = String.valueOf(e.get("rel"));
@@ -429,21 +441,40 @@ public class SyncService {
                 int parts = e.get("parts") instanceof Number n ? n.intValue() : 1;
                 Path target = data.resolve(rel).normalize();
                 if (!target.startsWith(data)) { done++; continue; }
-                Files.createDirectories(target.getParent());
-                java.io.ByteArrayOutputStream content = new java.io.ByteArrayOutputStream();
-                for (int pi = 0; pi < parts; pi++) {
-                    String obj = objName(hash, pi, parts);
-                    byte[] part = dav.get(c.server(), c.user(), c.pass(), OBJECT_DIR + "/" + obj,
-                            Duration.ofMinutes(15));
-                    content.writeBytes(part);
+                // 断点续传：本地已存在且内容一致的文件直接跳过。
+                // 恢复中途因网络/风控失败后重试，只需补下缺失部分，不必重下整包。
+                long cloudSize = e.get("size") instanceof Number sn ? sn.longValue() : -1;
+                if (!rel.equals("app.json") && cloudSize >= 0 && Files.exists(target)
+                        && Files.size(target) == cloudSize) {
+                    try {
+                        if (sha256(Files.readAllBytes(target)).equals(hash)) {
+                            done++;
+                            setP("校验 " + done + "/" + total + "：" + rel, 10 + done * 88 / Math.max(1, total));
+                            continue;
+                        }
+                    } catch (Exception ignored) { /* 读不了就重下 */ }
                 }
-                // app.json 恢复时保留本地 API Key（云端备份里的 Key 是脱敏空值）
-                if (rel.equals("app.json") && Files.exists(target)) {
-                    String cloud = content.toString(java.nio.charset.StandardCharsets.UTF_8);
-                    String merged = mergeAppConfig(Files.readString(target, java.nio.charset.StandardCharsets.UTF_8), cloud);
-                    Files.writeString(target, merged, java.nio.charset.StandardCharsets.UTF_8);
-                } else {
-                    Files.write(target, content.toByteArray());
+                try {
+                    Files.createDirectories(target.getParent());
+                    java.io.ByteArrayOutputStream content = new java.io.ByteArrayOutputStream();
+                    for (int pi = 0; pi < parts; pi++) {
+                        String obj = objName(hash, pi, parts);
+                        byte[] part = dav.get(c.server(), c.user(), c.pass(), OBJECT_DIR + "/" + obj,
+                                Duration.ofMinutes(15));
+                        content.writeBytes(part);
+                    }
+                    // app.json 恢复时保留本地 API Key（云端备份里的 Key 是脱敏空值）
+                    if (rel.equals("app.json") && Files.exists(target)) {
+                        String cloud = content.toString(java.nio.charset.StandardCharsets.UTF_8);
+                        String merged = mergeAppConfig(Files.readString(target, java.nio.charset.StandardCharsets.UTF_8), cloud);
+                        Files.writeString(target, merged, java.nio.charset.StandardCharsets.UTF_8);
+                    } else {
+                        Files.write(target, content.toByteArray());
+                    }
+                } catch (Exception ex) {
+                    // 限流/单文件缺失不拖垮整体：记下来继续，下次恢复会只补这些
+                    failed.add(rel);
+                    log.warn("恢复跳过 {}：{}", rel, ex.getMessage());
                 }
                 done++;
                 setP("恢复 " + done + "/" + total + "：" + rel, 10 + done * 88 / Math.max(1, total));
@@ -451,9 +482,14 @@ public class SyncService {
         } finally {
             dav.wideThrottle(0);
         }
-        progress.set(new Progress(false, "恢复完成", 100, null, (long) json.length / 1024, manifestName,
-                "已恢复 " + total + " 项，API Key 保留本地", startedAt));
-        log.info("增量恢复完成: {}（{} 项），API Key 保留本地", manifestName, total);
+        int okCount = total - failed.size();
+        String summary = failed.isEmpty()
+                ? "已恢复 " + total + " 项，API Key 保留本地"
+                : "已恢复 " + okCount + " 项，" + failed.size() + " 项因限流/缺失跳过；再点一次「从云端恢复」可续传补齐";
+        progress.set(new Progress(false, failed.isEmpty() ? "恢复完成" : "恢复部分完成（可续传）",
+                100, null, (long) json.length / 1024, manifestName, summary, startedAt));
+        log.info("增量恢复完成: {}（成功 {} / 失败 {}），API Key 保留本地",
+                manifestName, okCount, failed.size());
     }
 
     /**
