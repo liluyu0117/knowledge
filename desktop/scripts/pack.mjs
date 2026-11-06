@@ -22,7 +22,7 @@ process.env.ELECTRON_MIRROR ||= 'https://npmmirror.com/mirrors/electron/'
 process.env.ELECTRON_BUILDER_BINARIES_MIRROR ||= 'https://npmmirror.com/mirrors/electron-builder-binaries/'
 
 const args = process.argv.slice(2)
-const target = args.length ? args : ['--win', 'nsis', 'portable']
+const target = args.length ? args : ['--win', 'nsis']
 
 console.log('打包目标:', target.join(' '))
 execFileSync(process.execPath, [CLI, ...target], { cwd: ROOT, stdio: 'inherit' })

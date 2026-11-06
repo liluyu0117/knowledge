@@ -10,7 +10,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "runtime": "powershell -ExecutionPolicy Bypass -File scripts/build-runtime.ps1",
-    "dist": "node scripts/pack.mjs",
+    "dist": "node scripts/pack.mjs --win nsis",
     "pack": "node scripts/pack.mjs --win dir"
   },
   "build": {
@@ -42,12 +42,6 @@
           "arch": [
             "x64"
           ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
         }
       ],
       "icon": "icons/icon.ico",
@@ -62,10 +56,7 @@
       "shortcutName": "两翼知识库",
       "deleteAppDataOnUninstall": false
     },
-    "npmRebuild": false,
-    "portable": {
-      "artifactName": "两翼知识库-${version}-绿色版.${ext}"
-    }
+    "npmRebuild": false
   },
   "devDependencies": {
     "electron": "28.3.3",
