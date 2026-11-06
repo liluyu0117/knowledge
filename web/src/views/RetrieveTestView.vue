@@ -332,7 +332,7 @@ function evRowClass({ row }) {
         <el-input v-model="glossaryText" type="textarea" :rows="5" class="glo-input"
                   placeholder="每行一条，格式：术语=别名1,别名2&#10;运管=运营管理,运管平台&#10;会签=会签流程,多级会签" />
         <div class="glo-bar">
-          <span class="hint">例：`两翼=两翼系统`、`上线方案=上线计划,投产方案`</span>
+          <span class="hint">例：`OA=办公系统`、`上线方案=上线计划,投产方案`</span>
           <el-button size="small" type="primary" :loading="glossarySaving" @click="saveGlossary">保存术语表</el-button>
         </div>
       </el-collapse-item>

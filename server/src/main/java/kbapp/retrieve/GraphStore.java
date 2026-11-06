@@ -148,7 +148,7 @@ public class GraphStore {
 
     /**
      * 查询扩展：问句中出现的实体 → 把与其有直接关系的实体名作为补充检索词。
-     * 例：问句含「两翼」且图谱里有「两翼 —工单流转→ 铁塔运维平台」，则补充「铁塔运维平台」。
+     * 例：问句含「OA」且图谱里有「OA —工单流转→ 运维平台」，则补充「运维平台」。
      */
     public List<String> expand(String kbId, String query) {
         if (query == null || query.isBlank()) return List.of();

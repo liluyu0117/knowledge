@@ -1,7 +1,7 @@
 'use strict'
 
 /**
- * 两翼知识库 · 桌面端主进程
+ * 知识库 · 桌面端主进程
  *
  * 职责：选端口 → 拉起 Java 服务（sidecar）→ 等 /api/health 就绪 → 开窗口
  *      关窗隐藏到托盘；托盘「退出」才结束服务进程。
@@ -178,7 +178,7 @@ function createWindow() {
     minHeight: 680,
     show: false,
     backgroundColor: '#F6F7F9',
-    title: '两翼知识库',
+    title: '知识库',
     icon: path.join(__dirname, 'icons', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -219,7 +219,7 @@ function createWindow() {
 function createTray() {
   const img = nativeImage.createFromPath(path.join(__dirname, 'icons', 'tray.png'))
   tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img)
-  tray.setToolTip('两翼知识库')
+  tray.setToolTip('知识库')
   const menu = Menu.buildFromTemplate([
     { label: '打开主界面', click: () => showWindow() },
     { type: 'separator' },

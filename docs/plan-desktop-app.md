@@ -114,7 +114,7 @@ desktop/
 - `extraResources`: `kb.jar` + `jre/` → 安装目录 `resources/`
 - `nsis`: 一键安装、`perMachine: false`（装到用户目录，避开 Program Files 权限问题）
 - `asar: true`，但 `resources/` 外置（jar 与 jre 不进 asar）
-- 安装目录默认 `%LOCALAPPDATA%\Programs\两翼知识库`
+- 安装目录默认 `%LOCALAPPDATA%\Programs\知识库`
 
 ### 5.4 数据位置与迁移
 
@@ -172,7 +172,7 @@ desktop/
 
 ### 由此确定的两处细节
 
-1. 安装目录默认 `%LOCALAPPDATA%\Programs\两翼知识库`（用户可写），数据在其下 `data\.kb`
+1. 安装目录默认 `%LOCALAPPDATA%\Programs\知识库`（用户可写），数据在其下 `data\.kb`
 2. 点「×」= 隐藏到托盘；托盘菜单「打开主界面 / 退出」；「退出」才终止 sidecar
 
 ---

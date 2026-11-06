@@ -15,7 +15,7 @@
     <artifactId>kb-server</artifactId>
     <version>0.1.0</version>
     <name>kb-server</name>
-    <description>两翼知识库 RAG 应用后端</description>
+    <description>知识库 RAG 应用后端</description>
 
     <properties>
         <java.version>17</java.version>

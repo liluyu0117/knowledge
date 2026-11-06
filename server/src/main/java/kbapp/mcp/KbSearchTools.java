@@ -89,7 +89,7 @@ public class KbSearchTools {
             @ToolParam(description = "检索问题或关键词，用文档里的原话效果最好") String query,
             @ToolParam(required = false, description = "知识库 id 或名称（kb_list 返回）；省略则用第一个库") String kbId,
             @ToolParam(required = false, description = "返回片段数，默认 8，上限 30") Integer topK,
-            @ToolParam(required = false, description = "限定子目录（相对库根，如「两翼/上线方案」）；省略则全库") String folder,
+            @ToolParam(required = false, description = "限定子目录（相对库根，如「项目A/上线方案」）；省略则全库") String folder,
             @ToolParam(required = false, description = "每个文档最多返回几个片段，默认 3") Integer maxPerDoc,
             @ToolParam(required = false, description = "只返回带这些标签（任一命中即可）的文档，逗号分隔，如「上线方案,需求」；标签清单先用 kb_tags 或管理页确认") String tags) {
 

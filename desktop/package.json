@@ -1,11 +1,11 @@
 {
-  "name": "liangyi-kb-desktop",
-  "productName": "两翼知识库",
+  "name": "kb-desktop",
+  "productName": "知识库",
   "version": "0.1.0",
-  "description": "两翼知识库桌面端（Electron 壳 + 内置 Java 服务）",
+  "description": "知识库桌面端（Electron 壳 + 内置 Java 服务）",
   "main": "main.js",
   "private": true,
-  "author": "两翼研运",
+  "author": "知识库",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
@@ -15,7 +15,7 @@
   },
   "build": {
     "appId": "com.xjwl.kb.desktop",
-    "productName": "两翼知识库",
+    "productName": "知识库",
     "directories": {
       "output": "dist",
       "buildResources": "icons"
@@ -45,7 +45,7 @@
         }
       ],
       "icon": "icons/icon.ico",
-      "artifactName": "LiangyiKB-${version}-setup.${ext}"
+      "artifactName": "KnowledgeBase-${version}-setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -53,7 +53,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "两翼知识库",
+      "shortcutName": "知识库",
       "deleteAppDataOnUninstall": false
     },
     "npmRebuild": false
