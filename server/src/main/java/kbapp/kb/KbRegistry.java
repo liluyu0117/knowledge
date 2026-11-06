@@ -159,6 +159,23 @@ public class KbRegistry {
     public synchronized void remove(String id) {
         entries.removeIf((e) -> e.id().equals(id) && !e.fixed());
         save();
+        // 磁盘目录不能静默残留：残留既占空间，又会被备份一并带走，
+        // 恢复后表现为「已删的知识库自己复活」。这里改为软删除移到 .trash/，
+        // 需要时可手工找回；确认无用后自行清理该目录。
+        try {
+            Path dir = paths.dataDir().resolve("kbdata").resolve(id);
+            if (Files.isDirectory(dir)) {
+                Path trash = paths.dataDir().resolve(".trash").resolve("kbdata");
+                Files.createDirectories(trash);
+                String ts = java.time.LocalDateTime.now().withNano(0)
+                        .toString().replace(":", "").replace("-", "");
+                Files.move(dir, trash.resolve(id + "-" + ts),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                log.info("知识库 {} 的磁盘目录已移入回收站: {}", id, trash);
+            }
+        } catch (Exception e) {
+            log.warn("移动知识库目录到回收站失败 {}: {}", id, e.toString());
+        }
     }
 
     /** 知识库根目录：全部使用复制到工作路径的独立副本。 */
