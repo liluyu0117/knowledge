@@ -4,7 +4,8 @@ $ErrorActionPreference = 'Stop'
 
 $desktop = Split-Path -Parent $PSScriptRoot
 $repo = Split-Path -Parent $desktop
-$jdk = Join-Path $repo 'portable\jdk\jdk-17.0.20.1+1'
+# 优先用环境里的 JAVA_HOME（CI / 已配 JDK 的机器），否则回退到仓库内的便携 JDK
+$jdk = if ($env:JAVA_HOME) { $env:JAVA_HOME } else { Join-Path $repo 'portable\jdk\jdk-17.0.20.1+1' }
 $out = Join-Path $desktop 'resources\jre'
 
 if (-not (Test-Path (Join-Path $jdk 'bin\jlink.exe'))) {
