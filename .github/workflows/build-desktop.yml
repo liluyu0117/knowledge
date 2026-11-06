@@ -76,9 +76,30 @@ jobs:
           npm ci
           npm run build
 
+      - name: 配置 Maven 镜像（加速依赖下载）
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:USERPROFILE '.m2'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          @'
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+            <mirrors>
+              <mirror>
+                <id>aliyun</id>
+                <name>Aliyun Public</name>
+                <url>https://maven.aliyun.com/repository/public</url>
+                <mirrorOf>central</mirrorOf>
+              </mirror>
+            </mirrors>
+          </settings>
+          '@ | Set-Content (Join-Path $dir 'settings.xml') -Encoding utf8
+          Write-Host "settings.xml 已写入 $dir"
+
       - name: 构建后端可执行 jar
         working-directory: server
-        run: mvn -B -DskipTests package
+        run: |
+          mvn -B -e -DskipTests package 2>&1 | Tee-Object -FilePath ../mvn-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 准备桌面端资源
         shell: pwsh
@@ -116,6 +137,17 @@ jobs:
             desktop/dist/*.blockmap
           retention-days: 14
           if-no-files-found: error
+
+      - name: 上传构建日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.run_number }}
+          path: |
+            mvn-build.log
+            desktop/dist/*.log
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: 发布 GitHub Release（仅 tag 触发）
         if: startsWith(github.ref, 'refs/tags/v')
