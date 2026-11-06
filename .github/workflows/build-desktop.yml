@@ -46,12 +46,37 @@ jobs:
             web/package-lock.json
             desktop/package-lock.json
 
-      - name: 准备 JDK 17
-        uses: actions/setup-java@v4
+      - name: 准备 JDK 17（Microsoft，匹配 pom 的 toolchain 约束）
+        uses: actions/setup-java@v5
         with:
-          distribution: temurin
+          distribution: microsoft
           java-version: '17'
           cache: maven
+
+      - name: 生成 Maven toolchains.xml
+        shell: pwsh
+        run: |
+          # pom 的 maven-toolchains-plugin 要求 jdk vendor=microsoft version=17，
+          # 必须显式声明 vendor，否则报「No toolchain matched」。
+          $dir = Join-Path $env:USERPROFILE '.m2'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $jdk = $env:JAVA_HOME
+          $xml = @"
+          <toolchains xmlns="http://maven.apache.org/TOOLCHAINS/1.1.0">
+            <toolchain>
+              <type>jdk</type>
+              <provides>
+                <version>17</version>
+                <vendor>microsoft</vendor>
+              </provides>
+              <configuration>
+                <jdkHome>$jdk</jdkHome>
+              </configuration>
+            </toolchain>
+          </toolchains>
+          "@
+          Set-Content (Join-Path $dir 'toolchains.xml') $xml -Encoding utf8
+          Write-Host "toolchains.xml -> $jdk"
 
       - name: 确定版本号
         shell: pwsh
