@@ -43,6 +43,11 @@ const syncProg = ref({ phase: '', percent: 0, error: null, sizeKB: null, detail:
 const syncElapsed = ref(0)
 let syncElapsedTimer = null
 let syncProgTimer = null
+// 恢复前的版本选择：绝不能默认取「最新」——恢复前的自动兜底快照也是最新的一份
+const restoreDialog = ref(false)
+const restoreList = ref([])
+const restorePick = ref('')
+const restoreLoading = ref(false)
 
 const rerankKey = ref('')
 const rerankTesting = ref(false)
@@ -609,23 +614,62 @@ async function doBackup() {
 
 function doRestore() {
   if (restoring.value) return
-  ElMessageBox.confirm('恢复将覆盖本地的会话、知识库与智能体数据（恢复前会自动做安全备份）。继续？', '从云端恢复', {
-    type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消',
+  ElMessageBox.confirm('恢复将覆盖本地的会话、知识库与智能体数据（恢复前会自动做一次安全快照）。继续？', '从云端恢复', {
+    type: 'warning', confirmButtonText: '选择备份', cancelButtonText: '取消',
   }).then(async () => {
-    restoring.value = true
+    restoreLoading.value = true
     try {
       const list = await api.get('/api/sync/list')
-      const latest = (Array.isArray(list) && list.length) ? list[0].name : null
-      if (!latest) { ElMessage.error('云端没有可恢复的备份'); return }
-      const r = await api.post('/api/sync/restore', { name: latest })
-      if (r.started) { syncRunning.value = true; pollSync() }
-      else ElMessage.warning('已有同步任务在进行中，请等待当前任务结束')
+      const items = (Array.isArray(list) ? list : []).filter((x) => x && x.name && !String(x.name).startsWith('错误'))
+      if (!items.length) { ElMessage.error('云端没有可恢复的备份'); return }
+      restoreList.value = items
+      // 默认选第一份「正常备份」（后端已把自动兜底快照排到最后）
+      restorePick.value = items[0].name
+      restoreDialog.value = true
     } catch (e) {
-      ElMessage.error('恢复失败：' + (e.message || e))
+      ElMessage.error('读取备份列表失败：' + (e.message || e))
     } finally {
-      restoring.value = false
+      restoreLoading.value = false
     }
   }).catch(() => {})
+}
+
+async function confirmRestore() {
+  if (!restorePick.value) { ElMessage.warning('请选择要恢复的备份'); return }
+  restoring.value = true
+  try {
+    const r = await api.post('/api/sync/restore', { name: restorePick.value })
+    if (r.started) {
+      restoreDialog.value = false
+      syncRunning.value = true
+      pollSync()
+    } else ElMessage.warning('已有同步任务在进行中，请等待当前任务结束')
+  } catch (e) {
+    ElMessage.error('恢复失败：' + (e.message || e))
+  } finally {
+    restoring.value = false
+  }
+}
+
+function fmtBackupTime(ms) {
+  if (!ms) return '—'
+  const d = new Date(ms)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+function fmtBackupSize(bytes) {
+  if (!bytes) return '—'
+  const mb = bytes / 1048576
+  return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`
+}
+
+function backupLabel(item) {
+  if (item.auto) return '自动快照（恢复前自动生成）'
+  const t = fmtBackupTime(item.lastModified)
+  const f = item.files > 0 ? `${item.files} 个文件` : ''
+  const s = fmtBackupSize(item.size)
+  return [t, f, s === '—' ? '' : s].filter(Boolean).join(' · ')
 }
 
 // ── MCP ──
@@ -1060,7 +1104,7 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
                 <el-button size="small" :disabled="syncRunning" :loading="syncTesting" @click="testSync">测试连接</el-button>
                 <el-button size="small" :disabled="syncRunning" :loading="syncSaving" @click="saveSyncCfg">保存配置</el-button>
                 <el-button size="small" type="primary" :disabled="syncRunning" :loading="backupStarting" @click="doBackup">立即备份</el-button>
-                <el-button size="small" :disabled="syncRunning" :loading="restoring" @click="doRestore">从云端恢复</el-button>
+                <el-button size="small" :disabled="syncRunning" :loading="restoring || restoreLoading" @click="doRestore">从云端恢复</el-button>
               </div>
 
               <div v-if="syncRunning" class="prog">
@@ -1072,6 +1116,23 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
                 <div class="pt2 perr">上次同步失败：{{ syncProg.error }}</div>
                 <div class="pt3">可再次点击按钮重试；若反复失败请查看日志</div>
               </div>
+
+              <el-dialog v-model="restoreDialog" title="选择要恢复的备份" width="620px" append-to-body>
+                <div class="restore-tip">
+                  恢复会用所选备份覆盖本地数据。标为「自动快照」的是每次恢复前自动生成的本机状态，
+                  通常不是你想恢复的内容。请优先选择文件数与你实际内容相符的备份。
+                </div>
+                <el-radio-group v-model="restorePick" class="restore-list">
+                  <el-radio v-for="it in restoreList" :key="it.name" :value="it.name" class="restore-item">
+                    <span class="ri-main">{{ backupLabel(it) }}</span>
+                    <span class="ri-sub">{{ it.name }}</span>
+                  </el-radio>
+                </el-radio-group>
+                <template #footer>
+                  <el-button @click="restoreDialog = false">取消</el-button>
+                  <el-button type="primary" :loading="restoring" @click="confirmRestore">开始恢复</el-button>
+                </template>
+              </el-dialog>
 
               <div class="notes">
                 <div class="note-line">同步范围：文档副本 · 会话 · 智能体配置（<b>不含 API Key 与索引</b>）</div>
@@ -1212,5 +1273,11 @@ function copyBridge() { copyText(bridgeJson.value, '桥接配置') }
 .pt3{font-size:var(--fs-2xs);color:var(--ink3);margin-top:2px;word-break:break-all}
 .pt2{font-size:var(--fs-2xs);color:var(--ink3);margin-top:5px}
 .perr{color:#c45656}
+.restore-tip{font-size:var(--fs-2xs);color:var(--ink3);line-height:1.7;margin-bottom:12px}
+.restore-list{display:flex;flex-direction:column;gap:2px;max-height:46vh;overflow:auto}
+.restore-item{height:auto;padding:8px 0;align-items:flex-start}
+.restore-item :deep(.el-radio__label){display:flex;flex-direction:column;gap:3px;line-height:1.5}
+.ri-main{font-size:var(--fs-xs);color:var(--ink1)}
+.ri-sub{font-size:var(--fs-2xs);color:var(--ink3);word-break:break-all}
 .empty{padding:16px 0;font-size:var(--fs-sm);color:var(--ink3)}
 </style>

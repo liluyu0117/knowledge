@@ -59,6 +59,8 @@ public class SyncService {
         return t;
     });
     private final AtomicBoolean running = new AtomicBoolean(false);
+    /** 清单元数据缓存：name -> {文件数, 字节数}。清单一旦生成内容不再变化，可长期缓存。 */
+    private final Map<String, long[]> manifestMeta = new java.util.concurrent.ConcurrentHashMap<>();
     private final AtomicReference<Progress> progress =
             new AtomicReference<>(Progress.idle());
 
@@ -67,7 +69,12 @@ public class SyncService {
         static Progress idle() { return new Progress(false, "空闲", 0, null, null, null, null, null); }
     }
 
-    public record BackupInfo(String name, long size, long lastModified) {}
+    /**
+     * @param size  备份内容总字节数（zip 旧格式为 0）
+     * @param files 清单内文件数（-1 表示不适用）
+     * @param auto  true = 恢复前的自动兜底快照（auto- 前缀），不是用户主动做的备份
+     */
+    public record BackupInfo(String name, long size, long lastModified, int files, boolean auto) {}
 
     public record SyncCfg(String server, String user, String appPassword, boolean autoDaily) {}
 
@@ -257,6 +264,15 @@ public class SyncService {
     }
 
     private void runBackup() throws Exception {
+        runBackup(false);
+    }
+
+    /**
+     * @param autoSnapshot true = 恢复前的自动兜底快照。
+     *   兜底快照用 auto- 前缀单独标记：数据往往与「用户真正想恢复的那份」无关（甚至是空的），
+     *   不能混在正常备份里冒充「最新备份」，否则恢复永远只能选中它。
+     */
+    private void runBackup(boolean autoSnapshot) throws Exception {
         long t0 = System.currentTimeMillis();
         startedAt = t0;
         // 会话库是 WAL 模式，先合并回主库再收集文件，否则备份里的 chat.db 是空的
@@ -367,8 +383,15 @@ public class SyncService {
             entryList.add(e);
         }
         snapshot.put("entries", entryList);
-        String manifestName = "m-" + LocalDateTime.now().withNano(0)
-                .toString().replace(":", "").replace("-", "") + ".json";
+        // 文件名携带元数据（文件数 + MB），列备份时无需下载 600KB 清单即可展示，
+        // 形如 m-20261105T113326-2486-1009mb.json
+        long manifestBytes = 0;
+        for (Map<String, Object> e : entryList) {
+            if (e.get("size") instanceof Number n) manifestBytes += n.longValue();
+        }
+        String manifestName = (autoSnapshot ? "auto-" : "m-")
+                + LocalDateTime.now().withNano(0).toString().replace(":", "").replace("-", "")
+                + "-" + entryList.size() + "-" + (manifestBytes / 1048576) + "mb.json";
         dav.put(c.server(), c.user(), c.pass(), MANIFEST_DIR + "/" + manifestName,
                 M.writerWithDefaultPrettyPrinter().writeValueAsBytes(snapshot), Duration.ofMinutes(10));
 
@@ -409,6 +432,20 @@ public class SyncService {
                     .filter((e) -> !e.directory() && e.name().endsWith(".json"))
                     .sorted((a, b) -> Long.compare(b.lastModified(), a.lastModified()))
                     .toList();
+            // 自动兜底快照（auto-）单独计数，只保留最近 3 个；
+            // 否则每次恢复都产生一个快照，会把用户真正的备份挤出保留窗口。
+            List<WebDavClient.Entry> autos = snaps.stream()
+                    .filter((e) -> e.name().startsWith("auto-")).toList();
+            for (int i = 3; i < autos.size(); i++) {
+                try {
+                    var req = java.net.http.HttpRequest.newBuilder(davUri(c.server(), MANIFEST_DIR + "/" + autos.get(i).name()))
+                            .header("Authorization", basic(c.user(), c.pass()))
+                            .method("DELETE", java.net.http.HttpRequest.BodyPublishers.noBody())
+                            .build();
+                    java.net.http.HttpClient.newHttpClient().send(req, java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+                } catch (Exception ignored) { }
+            }
+            snaps = snaps.stream().filter((e) -> !e.name().startsWith("auto-")).toList();
             for (int i = KEEP; i < snaps.size(); i++) {
                 try {
                     var req = java.net.http.HttpRequest.newBuilder(davUri(c.server(), MANIFEST_DIR + "/" + snaps.get(i).name()))
@@ -423,16 +460,16 @@ public class SyncService {
 
     private void runIncrementRestore(String manifestName) throws Exception {
         SyncCfgFull c = cfg();
-        runBackup(); // 恢复前安全兜底（当前状态先推一份）
+        runBackup(true); // 恢复前安全兜底（当前状态先推一份，用 auto- 前缀标记）
         setP("正在下载清单", 5);
         byte[] json = dav.get(c.server(), c.user(), c.pass(), MANIFEST_DIR + "/" + manifestName);
         Map<String, Object> parsed = M.readValue(new String(json, java.nio.charset.StandardCharsets.UTF_8), Map.class);
         List<Map<String, Object>> entries = (List<Map<String, Object>>) (Object) parsed.get("entries");
         Path data = config.dataDir();
         int total = entries.size(), done = 0;
-        // 批量下载会被网关/云盘限流（AList→阿里云盘实测连续请求会 403/500），
-        // 恢复期放宽最小间隔，且单个文件失败不中断整体（靠断点续传多轮补齐）。
-        dav.wideThrottle(1100);
+        // 批量下载需防止网关/云盘限流，恢复期把最小请求间隔放宽到 300ms（默认 450ms 对
+        // AList 代理场景偏保守，实测 300ms 稳定）；结束后恢复原值。
+        dav.wideThrottle(300);
         List<String> failed = new ArrayList<>();
         try {
             for (Map<String, Object> e : entries) {
@@ -525,18 +562,63 @@ public class SyncService {
     public List<BackupInfo> cloudList() {
         SyncCfgFull c = cfg();
         try {
+            List<WebDavClient.Entry> jsonEntries = dav.propfind(c.server(), c.user(), c.pass(), MANIFEST_DIR)
+                    .stream().filter((e) -> !e.directory() && e.name().endsWith(".json")).toList();
+
             List<BackupInfo> out = new ArrayList<>();
-            for (WebDavClient.Entry e : dav.propfind(c.server(), c.user(), c.pass(), MANIFEST_DIR)) {
-                if (!e.directory() && e.name().endsWith(".json")) {
-                    out.add(new BackupInfo(e.name(), 0, e.lastModified()));
+            List<WebDavClient.Entry> legacy = new ArrayList<>();
+            for (WebDavClient.Entry e : jsonEntries) {
+                // 先从文件名取（新格式），取不到再用缓存，最后才考虑异步解析
+                var mn = java.util.regex.Pattern
+                        .compile("-(\\d+)-(\\d+)mb\\.json$").matcher(e.name());
+                int files = -1;
+                long bytes = 0;
+                if (mn.find()) {
+                    files = Integer.parseInt(mn.group(1));
+                    bytes = Long.parseLong(mn.group(2)) * 1048576L;
+                } else {
+                    long[] meta = manifestMeta.get(e.name());
+                    if (meta != null) { files = (int) meta[0]; bytes = meta[1]; }
+                    else legacy.add(e);
                 }
+                out.add(new BackupInfo(e.name(), bytes, e.lastModified(), files, e.name().startsWith("auto-")));
+            }
+            // 老格式清单：后台补解析，本次先返回未知
+            if (!legacy.isEmpty()) {
+                var bg = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                    Thread t = new Thread(r, "manifest-meta");
+                    t.setDaemon(true);
+                    return t;
+                });
+                bg.submit(() -> {
+                    for (WebDavClient.Entry e : legacy) {
+                        try {
+                            byte[] b = dav.get(cfg().server(), cfg().user(), cfg().pass(),
+                                    MANIFEST_DIR + "/" + e.name(), Duration.ofSeconds(60));
+                            Map<String, Object> m = M.readValue(new String(b, java.nio.charset.StandardCharsets.UTF_8), Map.class);
+                            long f = -1, by = 0;
+                            if (m.get("entries") instanceof List<?> list) {
+                                f = list.size();
+                                for (Object o : list) {
+                                    if (o instanceof Map<?, ?> em && em.get("size") instanceof Number n) by += n.longValue();
+                                }
+                            }
+                            manifestMeta.put(e.name(), new long[]{f, by});
+                        } catch (Exception ignored) { }
+                    }
+                });
+                bg.shutdown();
             }
             for (WebDavClient.Entry e : dav.propfind(c.server(), c.user(), c.pass(), REMOTE_DIR)) {
                 if (!e.directory() && e.name().endsWith(".zip")) {
-                    out.add(new BackupInfo(e.name(), 0, e.lastModified()));
+                    out.add(new BackupInfo(e.name(), 0, e.lastModified(), -1, false));
                 }
             }
-            out.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+            // 正常备份排前面（按时间新→旧），自动兜底快照排最后
+            out.sort((a, b) -> {
+                if (a.auto() != b.auto()) return a.auto() ? 1 : -1;
+                return Long.compare(b.lastModified(), a.lastModified());
+            });
             return out;
         } catch (Exception e) {
             throw new IllegalStateException("列出云端备份失败: " + e.getMessage(), e);
