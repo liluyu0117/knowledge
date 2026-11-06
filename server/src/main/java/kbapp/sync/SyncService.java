@@ -51,6 +51,7 @@ public class SyncService {
     private final ConfigService config;
     private final WebDavClient dav;
     private final kbapp.chat.ChatStore chatStore;
+    private final kbapp.kb.KbRegistry kbRegistry;
     private static final ObjectMapper M = new ObjectMapper();
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
@@ -82,10 +83,12 @@ public class SyncService {
 
     private record FileMeta(String rel, String sha256, long size, int parts) {}
 
-    public SyncService(ConfigService config, WebDavClient dav, kbapp.chat.ChatStore chatStore) {
+    public SyncService(ConfigService config, WebDavClient dav, kbapp.chat.ChatStore chatStore,
+                      kbapp.kb.KbRegistry kbRegistry) {
         this.config = config;
         this.dav = dav;
         this.chatStore = chatStore;
+        this.kbRegistry = kbRegistry;
     }
 
     public Progress progress() { return progress.get(); }
@@ -196,11 +199,25 @@ public class SyncService {
         progress.set(new Progress(true, phase, percent, null, null, null, detail, startedAt));
     }
 
-    /** 同步内容文件清单：kbdata/ + 根部关键 json/db，app.json 脱敏。 */
+    /** 同步内容文件清单：已注册知识库目录 + 根部关键 json/db，app.json 脱敏。 */
     private List<Path> syncFiles() {
         Path data = config.dataDir();
         List<Path> files = new ArrayList<>();
-        collect(data.resolve("kbdata"), files);
+        // 只收集「当前仍注册」的知识库目录。
+        // 删除知识库后磁盘上可能留有旧目录，若整目录遍历会把已删内容一并备份，
+        // 恢复时又原样回来（表现为「删了的知识库自己复活」）。
+        java.util.Set<String> liveIds = new java.util.HashSet<>();
+        try {
+            for (kbapp.kb.KbRegistry.KbEntry e : kbRegistry.list()) liveIds.add(e.id());
+        } catch (Exception ex) {
+            log.warn("读取知识库列表失败，退化为全量收集: {}", ex.toString());
+            collect(data.resolve("kbdata"), files);
+        }
+        liveIds.add("notes"); // 内置笔记库
+        for (String id : liveIds) {
+            Path dir = data.resolve("kbdata").resolve(id);
+            if (Files.isDirectory(dir)) collect(dir, files);
+        }
         for (String name : new String[]{"chat.db", "kbs.json", "agents.json", "notes.json",
                 "eval.json", "build.json", "app.json"}) {
             Path f = data.resolve(name);
